@@ -1,0 +1,11 @@
+_start -> p1 : a
+p1 -> p2 : b
+p2 -> p3 : b
+p3 -> p4* : b
+
+_start -> q1 : a
+q1 -> q3 : b
+q1 -> q2* : b
+
+_start -> r1* : a
+r1* -> r1* : b

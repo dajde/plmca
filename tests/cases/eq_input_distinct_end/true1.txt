@@ -1,0 +1,3 @@
+_start -> p1* : a
+_start -> p2* : a
+_start -> p3* : a

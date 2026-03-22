@@ -1,0 +1,2 @@
+_start -> end1* : a,0
+_start -> end1* : b,1

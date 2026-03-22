@@ -1,0 +1,2 @@
+exists pi : q1 -- u -> q2, exists pi1 : q1 -- u -> q1, exists pi2 : q2 -- u -> q2,
+reach_init q1 /\ reach_final q2 /\ ! q1 = q2

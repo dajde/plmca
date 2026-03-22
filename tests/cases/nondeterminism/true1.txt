@@ -1,0 +1,3 @@
+start -> p1 : a
+p1 -> end1 : b
+p1 -> end2 : b

@@ -1,0 +1,4 @@
+_init1 -> q1 : a
+_init2 -> q2 : b
+q1 -> fin : d
+q2 -> fin : e

@@ -1,0 +1,2 @@
+_start -> p1 : a
+p1 -> end* : c

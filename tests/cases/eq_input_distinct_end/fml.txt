@@ -1,0 +1,4 @@
+exists pi1: p1 -- u1 -> q1, exists pi2: p2 -- u2 -> q2, exists pi3: p3 -- u3 -> q3,
+init p1 /\ init p2 /\ init p3 /\ final q1 /\ final q2 /\ final q3 /\
+! q1 = q2 /\ ! q2 = q3 /\ ! q1 = q3 /\
+u1 = u2 /\ u2 = u3

@@ -1,0 +1,16 @@
+_A -> a1 : a
+a1 -> a2 : b
+a2 -> a3 : c
+a3 -> aX : z
+a3 -> _A : d
+
+_A -> ab1 : a
+ab1 -> ab2 : b
+ab2 -> ab3: c
+ab3 -> B* : d
+
+B* -> b1 : a
+b1 -> b2 : b
+b2 -> b3 : c
+b3 -> bX : y
+b3 -> B* : d
