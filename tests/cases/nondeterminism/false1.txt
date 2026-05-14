@@ -1,2 +1,0 @@
-start -> p1 : a
-p1 -> end1 : b

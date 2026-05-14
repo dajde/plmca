@@ -1,5 +1,0 @@
-_init1 -> q1 : b
-_init2 -> q1 : a
-_init3 -> q1 : c
-q1 -> q1 : a
-q1 -> fin : a

@@ -1,6 +1,0 @@
-start -> p1 : a
-p1 -> p2 : b
-p2 -> p3 : c
-p3 -> p4 : d
-p4 -> start : e
-p2 -> end : b

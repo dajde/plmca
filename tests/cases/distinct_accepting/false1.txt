@@ -1,3 +1,0 @@
-_start -> end1* : a
-_start -> end2* : b
-_start -> end2* : b

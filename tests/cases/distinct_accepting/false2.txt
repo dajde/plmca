@@ -1,6 +1,0 @@
-_start -> p1 : a
-p1 -> p2 : b
-p2 -> p5 : x
-p5 -> p3 : z
-p2 -> p3 : c
-p3 -> end* : d

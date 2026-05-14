@@ -1,0 +1,43 @@
+=== Non-Finite Ambiguity
+
+exists pi: q1 -- u -> q2, exists pi1: q1 -- u -> q1, exists pi2: q2 -- u -> q2, reach_init q1 /\ ! q1 = q2 /\ reach_final q2
+
+=== Non-Determinism
+
+exists pi1: q -- u -> q1, exists pi2: q -- u -> q2, ! q1 = q2
+
+=== Strongly Connected
+
+forall p forall q exists pi: p -- u -> q
+
+=== Initial and Final Reachability
+
+exists pi1 : p1 -- u1 -> q1, reach_init p1 /\ reach_final q1
+
+=== Input Language Inclusion
+
+exists pi1 : p1 -- u1 -> q1, u1 $> L0 /\ init p1 /\ final q1
+
+=== Output Language Term Inclusion
+
+exists pi1 : p1 -- u1, v1 -> q1, exists pi2 : p2 -- u2, v2 -> q2, v1.v2 $> L0 /\ init p1 /\ init p2 /\ ! p1 = p2 /\ final q1 /\ final q2
+
+=== Output Disequality
+
+exists pi1 : p -- u1, v1 -> q, exists pi2 : p -- u2, v2 -> q, ! v1 = v2 /\ init p /\ final q
+
+=== Non-functionality
+
+exists pi1: p1 -- u, v1 -> q1, exists pi2: p2 -- u, v2 -> q2, init p1 /\ init p2 /\ final q1 /\ final q2 /\ ! v1 = v2
+
+=== State Equality
+
+exists pi1 : p1 -- u1 -> q1, exists pi2 : p2 -- u2 -> q2, p1 = q2 /\ p2 = q1 /\ init p1 /\ final p2
+
+=== Three Distinct Accepting Paths
+
+exists pi1 : p1 -- u1 -> q1 , exists pi2 : p2 -- u2 -> q2 , exists pi3 : p3 -- u3 -> q3 , init p1 /\ init p2 /\ init p3 /\ final q1 /\ final q2 /\ final q3 /\ ! pi1 = pi2 /\ ! pi1 = pi3 /\ ! pi2 = pi3
+
+=== Input Length Comparison
+
+exists pi1 : p -- u1 -> q1, exists pi2 : p -- u2 -> q2,  init p /\ final q1 /\ final q2 /\ u1 <= u2 /\ ! u1 = u2

@@ -1,1 +1,0 @@
-exists pi1 : p -- u1, v1 -> q, exists pi2 : p -- u2, v2 -> q, ! v1 = v2 /\ init p /\ final q

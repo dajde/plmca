@@ -1,3 +1,0 @@
-_start -> p1 : a
-p1 -> p1 : b
-p1 -> end* : c

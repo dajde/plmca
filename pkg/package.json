@@ -1,0 +1,15 @@
+{
+  "name": "plmca",
+  "type": "module",
+  "version": "0.1.0",
+  "files": [
+    "plmca_bg.wasm",
+    "plmca.js",
+    "plmca.d.ts"
+  ],
+  "main": "plmca.js",
+  "types": "plmca.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}

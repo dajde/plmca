@@ -1,0 +1,64 @@
+=== Automaton 1
+
+_qI -> q1 : a
+q1 -> q1 : u
+q1 -> q2 : u
+q2 -> q2 : u
+q2 -> qF* : b
+
+=== Automaton 2
+
+_q -> p1 : a
+p1 -> p2 : a
+p2 -> p3 : a
+p3 -> end* : a
+_q -> q1 : b
+q1 -> q2 : b
+q2 -> end* : b
+
+=== Automaton 3
+
+_q1 -> q2 : a
+q2 -> q3 : a
+q3 -> q4 : p
+q4 -> q6 : x
+q6 -> q7 : d
+q7 -> q8 : m
+
+=== Automaton 4
+
+q -> p1 : a
+p1 -> p2 : b
+p2 -> p3 : c
+p3 -> p4 : d
+p4 -> q : e
+p2 -> r : c
+
+=== Transducer 1
+
+_p1 -> p2 : x, a|b
+p2 -> p3* : y, c|d|e
+_q1 -> q2 : m, f|g
+q2 -> q3* : n, h|i
+
+=== Transducer 2
+
+_p1 -> p2 : a, a|b
+p2 -> p3 : b, c
+p3 -> p3 : c, d
+
+=== Transducer 3
+
+_p1 -> p2 : x, a|b|c
+_p1 -> p3 : z, a|b|c|d
+p2 -> p2 : y, c
+
+=== Sum Automaton 1
+
+_start -> end1* : a,0
+_start -> end1* : b,1
+
+=== Sum Automaton 2
+
+_start -> end1* : a,1
+_start -> end1* : b,1

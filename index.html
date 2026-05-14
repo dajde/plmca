@@ -1,0 +1,83 @@
+<!doctype html>
+<html>
+  <head>
+    <title>plmca</title>
+    <link rel="stylesheet" href="style.css" />
+
+    <script src="./viz.js" defer></script>
+    <script src="./full.render.js" defer></script>
+    <script type="module" src="script.js"></script>
+  </head>
+
+  <body>
+    <div class="top-banner">Pattern Logic for Model Checking Automata</div>
+    <div class="container">
+      <div class="box">
+      <button id="helpButton">Help</button>
+      <div id="helpOverlay">
+        <div id="helpBox">
+          <button
+            class="removeButton"
+            id="closeHelpButton"
+          >
+          &#x2715
+          </button>
+          <p>This tool can be used to declaratively verify structural properties of finite automata.</p>
+          <p>On the left side you can input a finite automaton in a text format as a list of transitions. On the right side you can input the pattern logic formula. You can run the model-checker by clicking the 'Run' button.</p>
+          <p>The finite automata transitions are in the format "state1 -> state2 : letter". An underscore ("_") in the beginning of the name of the state marks an initial state, a star ("*") at the end of the name of the state marks a final state.</p>
+          <p>The formula is in the format "exists path : state1 -- word -> state2, ..., boolean_formula", where the part beginning with "exists..." is a path declaration with the name of the path variable "path", name of the starting state variable "state1", name of the input word variable "word" and name of the ending state variable "state2". "boolean_formula" is a boolean combination (and (/\), or (\/), negation (!)) of atomic predicates over the variables. Note that that "state1" and "state2" do NOT have to be initial or final states, respectively. There can be an arbitrary number of path declarations.</p>
+          <p>The available predicates are:
+            <br>
+            - x = y (state, input word or path x is equal to y)<br>
+            - x <= y (input word length of x is less than or equal to y)<br>
+            - x $> L (input word x belongs to language L)<br>
+            - x #> y (input word x is a prefix of y)<br>
+            - init x (initial state)<br>
+            - final x (final state)<br>
+            - reach_init x (state is reachable from initial state)<br>
+            - reach_final x (final state is reachable from state)<br>
+          </p>
+          <p>To use the language inclusion predicate, you need to define the languages via the "Add Language Automaton" button.</p>
+          <p>It is also possible to use universally quantified formulas, where the quantification is over states. Then the formula begins with "forall p ...", where "p" is a state variable appearing in some path declaration.
+          </p>
+          <p>The program also supports finite automata with outputs. The format of the transition is then "state1 -> state2 : letter, output", where "output" can be either 1. a number or 2. a sequence of letters separated by "|". If all of the transitions fulfill 1., the program considers it a sum automaton, if all transitions fulfill 2., the program considers it a transducer. In this case the formula path declarations have the format "exists path : state1 -- word, output -> state2", where "output" is an output variable. For sum automata, the program supports the output disequality of terms built from "+" (summation) of output variables. For transducers, the program supports the output language inclusion of terms built from "." (concatenation) of output variables.</p>
+          <p>There are example automata and formulas to illustrate the usage.</p>
+        </div>
+      </div>
+        <p>
+          <select id="automataSelect">
+            <option value="0">Select Automaton</option>
+          </select>
+        </p>
+        <textarea
+          id="automatonInput"
+          placeholder="Enter the Target Finite Automaton here..."
+          rows="10"
+          cols="70"
+          autocomplete="off"
+        ></textarea>
+
+        <div class="input-title">Target NFA</div>
+        <div id="graph"></div>
+      </div>
+      <div class="box">
+        <select id="formulaSelect">
+          <option value="0">Select Formula</option>
+        </select>
+        <button id="runButton">Run</button>
+        <div class="input-title">Pattern Logic Formula</div>
+        <textarea
+          id="formulaInput"
+          placeholder="Enter the Pattern Logic Formula here..."
+          rows="10"
+          cols="100"
+          autocomplete="off"
+        ></textarea>
+        <div id="result"></div>
+        <div id="result-detail"></div>
+        <div id="language-automata" class="input-title"></div>
+        <button id="addAutomaton">Add Language Automaton</button>
+      </div>
+    </div>
+  </body>
+</html>

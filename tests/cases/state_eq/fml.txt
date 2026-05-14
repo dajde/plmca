@@ -1,2 +1,0 @@
-exists pi1 : p1 -- u1 -> q1, exists pi2 : p2 -- u2 -> q2,
-p1 = q2 /\ p2 = q1 /\ init p1 /\ final p2

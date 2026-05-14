@@ -1,2 +1,0 @@
-exists pi1 : p1 -- u1 -> q1,
-! init p1 /\ ! final q1 /\ reach_init p1 /\ reach_final q1
