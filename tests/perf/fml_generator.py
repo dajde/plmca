@@ -1,7 +1,6 @@
 import random
 import os
 from enum import Enum, auto
-import shutil
 from fa_generator import OutputMonoid
 
 random.seed(42)

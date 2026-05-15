@@ -1,7 +1,6 @@
 import random
 import os
-from enum import Enum, auto
-import shutil
+from enum import Enum
 
 AUTOMATA_PATH = "automata"
 ALPHABET_SIZE = 10
