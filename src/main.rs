@@ -7,13 +7,14 @@ mod model_check;
 mod paths_n;
 mod util;
 
-const USAGE: &str = r#"Usage: plmca <automaton_file> <formula_file>
+const USAGE: &str = r#"Usage: plmca <automaton_file> <formula_file> <language_automata_files>
 
 Model-checks the given pattern logic formula against the given finite automaton.
 
 Arguments:
-  <automaton_file>   Path to a file containing a finite automaton
-  <formula_file>     Path to a file containing a pattern logic formula
+  <automaton_file>            Path to a file containing a finite automaton
+  <formula_file>              Path to a file containing a pattern logic formula
+  <language_automata_files>   Paths to files containing language automata in VAR=FILE format
 
 Output:
   Prints SATISFIED or NOT SATISFIED.
