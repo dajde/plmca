@@ -1323,6 +1323,13 @@ pub fn literals_to_automata<'a>(
                 ms.push(NfaM::input_lang_belong(path_id, dfa))
             }
             Atom::OutputBelongs(path_term, lang) => {
+                if matches!(
+                    target_nfa.output_type,
+                    OutputType::None | OutputType::Number
+                ) {
+                    return Err("output language inclusion only allowed for free monoid".to_owned());
+                }
+
                 let dfa = language_automata
                     .get(lang.as_str())
                     .ok_or_else(|| format!("undeclared language: {lang}"))
