@@ -299,7 +299,7 @@ async function __wbg_init(module_or_path) {
     }
 
     if (module_or_path === undefined) {
-        module_or_path = new URL('plmca_bg.5fa208ac.wasm', import.meta.url);
+        module_or_path = new URL('plmca_bg.7401b995.wasm', import.meta.url);
     }
     const imports = __wbg_get_imports();
 
