@@ -1,3 +1,6 @@
 /target
 TODO.txt
 /examples
+/pkg
+/tests/perf/automata
+/tests/perf/formulas

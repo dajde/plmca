@@ -1,0 +1,1 @@
+exists pi1: p1 -- u -> q1, exists pi2 : p2 -- u -> q2, ((init q1 /\ final q2) \/ (init q2 /\ final q1)) /\ ! pi1 = pi2

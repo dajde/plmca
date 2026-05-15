@@ -1,6 +1,6 @@
 //! Automata definitions and algorithms.
 
-use crate::automaton::parse::{RawTransOn, RawTransTo};
+use crate::automaton::parse::{RawAutomaton, RawTransTo};
 use crate::util::IdMap;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::hash::Hash;
@@ -8,7 +8,7 @@ use std::hash::Hash;
 mod parse;
 
 /// A state of a finite automaton.
-#[derive(Eq, Hash, PartialEq, Clone, Copy, Ord, PartialOrd, Debug)]
+#[derive(Eq, Hash, PartialEq, Clone, Copy, Ord, PartialOrd, Debug, Default)]
 pub struct State(pub usize);
 
 /// A letter of an alphabet of a finite automaton.
@@ -17,7 +17,15 @@ pub struct Letter(pub usize);
 
 /// An output number of a finite automaton with outputs.
 #[derive(Eq, Hash, PartialEq, Clone, Copy, Ord, PartialOrd, Debug)]
-pub struct OutputNumber(pub usize);
+pub struct OutputNumber(pub i32);
+
+/// An output letter of a finite automaton with number outputs.
+#[derive(Eq, Hash, PartialEq, Clone, Copy, Ord, PartialOrd, Debug)]
+pub struct OutputLetter(pub usize);
+
+/// An output word of a finite automaton with word outputs.
+pub type OutputWord = Vec<OutputLetter>;
+pub type OutputWordRef<'a> = &'a [OutputLetter];
 
 /// A starting state and letter of a transition of a finite automaton.
 #[derive(Eq, Hash, PartialEq, Clone, Copy, Debug)]
@@ -32,11 +40,18 @@ pub struct TransTo {
     pub state: State,
 }
 
-/// An ending state of a transition of a finite automaton with outputs.
+/// An ending state of a transition of a finite automaton with number outputs.
 #[derive(Eq, Hash, PartialEq, Clone, Copy, Debug)]
 pub struct NumberTransTo {
     pub state: State,
     pub output: OutputNumber,
+}
+
+/// An ending state of a transition of a finite automaton with word outputs.
+#[derive(Eq, Hash, PartialEq, Clone)]
+pub struct WordTransTo {
+    pub state: State,
+    pub output: OutputWord,
 }
 
 /// Possible transitions variants.
@@ -45,6 +60,7 @@ pub struct NumberTransTo {
 pub enum Transitions {
     None(HashMap<TransOn, HashSet<TransTo>>),
     Number(HashMap<TransOn, HashSet<NumberTransTo>>),
+    Word(HashMap<TransOn, HashSet<WordTransTo>>),
 }
 
 impl Transitions {
@@ -57,6 +73,7 @@ impl Transitions {
         match &self {
             Transitions::None(t) => extract(t.keys()),
             Transitions::Number(t) => extract(t.keys()),
+            Transitions::Word(t) => extract(t.keys()),
         }
     }
 
@@ -80,6 +97,9 @@ impl Transitions {
             Transitions::Number(trans) => {
                 Self::extract_base_trans(trans, |t_on| TransTo { state: t_on.state })
             }
+            Transitions::Word(trans) => {
+                Self::extract_base_trans(trans, |t_on| TransTo { state: t_on.state })
+            }
         }
     }
 }
@@ -89,6 +109,7 @@ impl Transitions {
 pub enum OutputType {
     None,
     Number,
+    Word,
 }
 
 /// Target Non-Deterministic Finite Automaton for Model-Checking.
@@ -96,8 +117,8 @@ pub struct TargetNfa {
     pub init: BTreeSet<State>,
     pub fin: BTreeSet<State>,
     pub trans: Transitions,
-    pub state_to_id: IdMap<String>,
-    pub letter_to_id: IdMap<String>,
+    pub state_to_id: IdMap<String, usize>,
+    pub letter_to_id: IdMap<String, usize>,
     pub output_type: OutputType,
 }
 
@@ -118,34 +139,43 @@ fn add_trans_to<T, F>(
     transition.insert(trans_on, trans_to_set);
 }
 
+pub struct ReachSets {
+    pub init: BTreeSet<State>,
+    pub fin: BTreeSet<State>,
+}
+
 impl TargetNfa {
     /// Create a new `TargetNfa` by parsing from a `&str`.
-    pub fn parse(value: &str) -> Self {
-        let (init, fin, transitions) = parse::parse_automaton(value);
+    pub fn parse(value: &str) -> Result<Self, String> {
+        let raw_automaton = parse::parse_automaton(value)?;
 
-        let output_type = if transitions
+        let all_empty = raw_automaton
+            .trans
             .iter()
-            .all(|x| x.1.iter().all(|y| y.output.is_empty()))
-        {
+            .all(|(_, ys)| ys.iter().all(|y| y.output.is_empty()));
+
+        let all_number = raw_automaton
+            .trans
+            .iter()
+            .all(|(_, ys)| ys.iter().all(|y| y.output.parse::<i32>().is_ok()));
+
+        let output_type = if all_empty {
             OutputType::None
-        } else {
+        } else if all_number {
             OutputType::Number
+        } else {
+            OutputType::Word
         };
 
-        TargetNfa::new(init, fin, transitions, output_type)
+        Ok(TargetNfa::new(raw_automaton, output_type))
     }
 
-    fn new(
-        initial_states: BTreeSet<String>,
-        final_states: BTreeSet<String>,
-        transitions: HashMap<RawTransOn, HashSet<RawTransTo>>,
-        output_type: OutputType,
-    ) -> TargetNfa {
+    fn new(raw_automaton: RawAutomaton, output_type: OutputType) -> TargetNfa {
         let mut state_to_id = IdMap::new();
         let mut letter_to_id = IdMap::new();
 
         let mut initial_ids = BTreeSet::new();
-        for state in initial_states {
+        for state in raw_automaton.init {
             let init_id = state_to_id.insert(state);
             initial_ids.insert(State(init_id));
         }
@@ -153,9 +183,10 @@ impl TargetNfa {
         let mut transition = match output_type {
             OutputType::None => Transitions::None(HashMap::new()),
             OutputType::Number => Transitions::Number(HashMap::new()),
+            OutputType::Word => Transitions::Word(HashMap::new()),
         };
 
-        for (raw_trans_on, raw_trans_to_set) in transitions {
+        for (raw_trans_on, raw_trans_to_set) in raw_automaton.trans {
             let trans_on = TransOn {
                 state: State(state_to_id.insert(raw_trans_on.state)),
                 letter: Letter(letter_to_id.insert(raw_trans_on.letter)),
@@ -177,11 +208,24 @@ impl TargetNfa {
 
                     add_trans_to(raw_trans_to_set, trans_on, transition, convert);
                 }
+
+                Transitions::Word(ref mut transition) => {
+                    let convert = |to: RawTransTo| WordTransTo {
+                        state: State(state_to_id.insert(to.state)),
+                        output: to
+                            .output
+                            .split("|")
+                            .map(|l| OutputLetter(letter_to_id.insert(l.to_owned())))
+                            .collect(),
+                    };
+
+                    add_trans_to(raw_trans_to_set, trans_on, transition, convert);
+                }
             }
         }
 
         let mut final_ids = BTreeSet::new();
-        for state in final_states {
+        for state in raw_automaton.fin {
             let final_id = state_to_id.insert(state);
             final_ids.insert(State(final_id));
         }
@@ -197,8 +241,15 @@ impl TargetNfa {
     }
 
     /// Get the states in this `TargetNfa`.
-    pub fn states(&self) -> Vec<State> {
+    pub fn states(&self) -> BTreeSet<State> {
         self.state_to_id.ids().iter().map(|&i| State(i)).collect()
+    }
+
+    pub fn reach_sets(&self) -> ReachSets {
+        ReachSets {
+            init: self.reach_init(),
+            fin: self.reach_final(),
+        }
     }
 
     /// Get the states we can reach from an initial state.
@@ -252,7 +303,7 @@ impl TargetNfa {
 }
 
 /// Deterministic Finite Automaton for defining a "language belongs to" predicate.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct LangDfa {
     pub init: State,
     pub fin: BTreeSet<State>,
@@ -266,33 +317,33 @@ impl LangDfa {
     /// `TargetNfa` match with the letters in `LangDfa`.
     ///
     /// The `input` can also be an NFA.
-    pub fn parse(input: &str, target_letter_to_id: &IdMap<String>) -> LangDfa {
-        let (init, fin, transitions) = parse::parse_automaton(input);
+    pub fn parse(
+        input: &str,
+        target_letter_to_id: &IdMap<String, usize>,
+    ) -> Result<LangDfa, String> {
+        let raw_automaton = parse::parse_automaton(input)?;
 
-        LangDfa::new(init, fin, transitions, target_letter_to_id)
+        Ok(LangDfa::new(raw_automaton, target_letter_to_id))
     }
 
-    fn new(
-        initial_states: BTreeSet<String>,
-        final_states: BTreeSet<String>,
-        transitions: HashMap<RawTransOn, HashSet<RawTransTo>>,
-        target_letter_to_id: &IdMap<String>,
-    ) -> LangDfa {
+    fn new(raw_automaton: RawAutomaton, target_letter_to_id: &IdMap<String, usize>) -> LangDfa {
         let mut state_to_id = IdMap::new();
         let mut target_letter_to_id = target_letter_to_id.clone();
 
-        let initial_ids: BTreeSet<State> = initial_states
+        let initial_ids: BTreeSet<State> = raw_automaton
+            .init
             .into_iter()
             .map(|x| State(state_to_id.insert(x)))
             .collect();
 
-        let final_ids: BTreeSet<State> = final_states
+        let final_ids: BTreeSet<State> = raw_automaton
+            .fin
             .into_iter()
             .map(|x| State(state_to_id.insert(x)))
             .collect();
 
         let mut trans = HashMap::new();
-        for (raw_trans_on, raw_trans_to_set) in transitions {
+        for (raw_trans_on, raw_trans_to_set) in raw_automaton.trans {
             let trans_on = TransOn {
                 state: State(state_to_id.insert(raw_trans_on.state)),
                 letter: Letter(target_letter_to_id.insert(raw_trans_on.letter)),
@@ -312,6 +363,17 @@ impl LangDfa {
             .map(|&i| Letter(i))
             .collect();
         Self::make_deterministic(initial_ids, final_ids, trans, &alphabet)
+    }
+
+    pub fn states(&self) -> Vec<State> {
+        let states: HashSet<_> = self
+            .trans
+            .keys()
+            .map(|x| x.state)
+            .chain(self.trans.values().copied())
+            .collect();
+
+        states.into_iter().collect()
     }
 
     fn make_deterministic(
@@ -382,8 +444,8 @@ impl LangDfa {
 
     /// Create a complementary `LangDfa` from this `LangDfa`.
     pub fn complement(self) -> Self {
-        let alphabet: Vec<_> = self.trans.keys().map(|x| x.letter).collect();
-        let states: Vec<_> = self
+        let alphabet: BTreeSet<_> = self.trans.keys().map(|x| x.letter).collect();
+        let states: BTreeSet<_> = self
             .trans
             .keys()
             .map(|x| x.state)
@@ -397,28 +459,28 @@ impl LangDfa {
         new_fin.insert(trap);
 
         for &s in &states {
+            if !self.fin.contains(&s) {
+                new_fin.insert(s);
+            }
+
             for &l in &alphabet {
                 let trans_on = TransOn {
                     state: s,
                     letter: l,
                 };
-                let to = self.trans.get(&trans_on);
-
-                let Some(&to) = to else {
-                    new_trans.insert(trans_on, trap);
-                    continue;
-                };
-
+                let to = *self.trans.get(&trans_on).unwrap_or(&trap);
                 new_trans.insert(trans_on, to);
-
-                if !self.fin.contains(&to) {
-                    new_fin.insert(to);
-                }
             }
+        }
 
-            if !self.fin.contains(&s) {
-                new_fin.insert(s);
-            }
+        for &l in &alphabet {
+            new_trans.insert(
+                TransOn {
+                    state: trap,
+                    letter: l,
+                },
+                trap,
+            );
         }
 
         Self {

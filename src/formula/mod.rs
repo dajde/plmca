@@ -2,24 +2,55 @@
 
 use crate::{
     atoms::{MAutomata, NfaM},
+    automaton::State,
+    formula::simplify::Literal,
+    paths_n::StartStateProp,
     util::{self, IdMap, parse::RawToken},
 };
-use std::collections::HashMap;
+use std::{collections::HashMap, iter::Peekable};
 
 pub mod simplify;
 
 /// Whole PL formula.
 pub struct PatternFormula {
+    pub forall_states: ForallStates,
     pub declarations: Declarations,
     pub constraints: BooleanFormula,
+    pub vars_mapping: Vars,
 }
 
+macro_rules! derive_from {
+    ($name:ident) => {
+        impl From<usize> for $name {
+            fn from(v: usize) -> Self {
+                Self(v)
+            }
+        }
+    };
+}
+
+#[derive(Eq, Hash, PartialEq, Clone, Copy, Ord, PartialOrd, Debug, Default)]
+pub struct PathId(pub usize);
+derive_from!(PathId);
+
+#[derive(Eq, Hash, PartialEq, Clone, Copy, Ord, PartialOrd, Debug, Default)]
+pub struct StateId(pub usize);
+derive_from!(StateId);
+
+#[derive(Eq, Hash, PartialEq, Clone, Copy, Ord, PartialOrd, Debug, Default)]
+pub struct InputId(usize);
+derive_from!(InputId);
+
+#[derive(Eq, Hash, PartialEq, Clone, Copy, Ord, PartialOrd, Debug, Default)]
+pub struct OutputId(usize);
+derive_from!(OutputId);
+
 struct Path {
-    id: usize,
-    start_id: usize,
-    end_id: usize,
-    input_id: usize,
-    output_id: Option<usize>,
+    id: PathId,
+    start_id: StateId,
+    end_id: StateId,
+    input_id: InputId,
+    output_id: Option<OutputId>,
 }
 
 /// Path declarations in the PL formula.
@@ -29,7 +60,7 @@ pub struct Declarations {
 
 impl Declarations {
     /// Get the id of the path by the start state id.
-    pub fn path_id_by_start_state(&self, id: usize) -> Option<usize> {
+    pub fn path_id_by_start_state(&self, id: StateId) -> Option<PathId> {
         self.declarations
             .iter()
             .find(|x| x.start_id == id)
@@ -37,7 +68,7 @@ impl Declarations {
     }
 
     /// Get the id of the path by the end state id.
-    pub fn path_id_by_end_state(&self, id: usize) -> Option<usize> {
+    pub fn path_id_by_end_state(&self, id: StateId) -> Option<PathId> {
         self.declarations
             .iter()
             .find(|x| x.end_id == id)
@@ -45,7 +76,7 @@ impl Declarations {
     }
 
     /// Get the id of the path by the input id.
-    pub fn path_id_by_input_var(&self, id: usize) -> usize {
+    pub fn path_id_by_input_var(&self, id: InputId) -> PathId {
         self.declarations
             .iter()
             .find(|x| x.input_id == id)
@@ -53,7 +84,7 @@ impl Declarations {
             .id
     }
     /// Get the id of the path by the output id.
-    pub fn path_id_by_output_var(&self, id: usize) -> usize {
+    pub fn path_id_by_output_var(&self, id: OutputId) -> PathId {
         self.declarations
             .iter()
             .find(|x| x.output_id == Some(id))
@@ -70,15 +101,15 @@ impl Declarations {
     pub fn implicit_equalities(&self) -> MAutomata<'_> {
         let declarations = &self.declarations;
 
-        let mut equivalences_inputs: HashMap<usize, Vec<usize>> = HashMap::new();
+        let mut equivalences_inputs: HashMap<InputId, Vec<PathId>> = HashMap::new();
 
         #[derive(Clone, Copy)]
         enum StateType {
-            Start(usize),
-            End(usize),
+            Start(PathId),
+            End(PathId),
         }
 
-        let mut equivalences_states: HashMap<usize, Vec<StateType>> = HashMap::new();
+        let mut equivalences_states: HashMap<StateId, Vec<StateType>> = HashMap::new();
 
         for decl in declarations {
             equivalences_inputs
@@ -128,6 +159,84 @@ impl Declarations {
 
         ms.into()
     }
+
+    pub fn start_state_restrictions(&self, conjunction: &Vec<Literal>) -> Vec<Vec<StartStateProp>> {
+        let mut restrictions = Vec::new();
+
+        for declaration in &self.declarations {
+            let mut prop_set = Vec::new();
+
+            let path_id = declaration.id;
+
+            for literal in conjunction {
+                match literal {
+                    Literal::Predicate(Atom::StartInit(id)) if *id == path_id => {
+                        prop_set.push(StartStateProp::Init)
+                    }
+                    Literal::Predicate(Atom::StartFinal(id)) if *id == path_id => {
+                        prop_set.push(StartStateProp::Final)
+                    }
+                    Literal::Predicate(Atom::StartReachInit(id)) if *id == path_id => {
+                        prop_set.push(StartStateProp::ReachInit)
+                    }
+                    Literal::Predicate(Atom::StartReachFinal(id)) if *id == path_id => {
+                        prop_set.push(StartStateProp::ReachFinal);
+                    }
+                    Literal::NotPredicate(Atom::StartInit(id)) if *id == path_id => {
+                        prop_set.push(StartStateProp::NotInit);
+                    }
+                    Literal::NotPredicate(Atom::StartFinal(id)) if *id == path_id => {
+                        prop_set.push(StartStateProp::NotFinal);
+                    }
+                    Literal::NotPredicate(Atom::StartReachInit(id)) if *id == path_id => {
+                        prop_set.push(StartStateProp::NotReachInit)
+                    }
+                    Literal::NotPredicate(Atom::StartReachFinal(id)) if *id == path_id => {
+                        prop_set.push(StartStateProp::NotReachFinal);
+                    }
+                    _ => {}
+                }
+            }
+
+            restrictions.push(prop_set);
+        }
+
+        restrictions
+    }
+}
+
+pub struct ForallStates(pub Vec<StateId>);
+
+impl ForallStates {
+    pub fn num_vars(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn universally_quantified_constraints<'a>(
+        &self,
+        Declarations { declarations }: &Declarations,
+        state_combination: &Vec<&State>,
+    ) -> (Vec<Vec<StartStateProp>>, MAutomata<'a>) {
+        let n = declarations.len();
+
+        let mut uq_restrictions = vec![vec![]; n];
+        let mut uq_ms = MAutomata::new();
+
+        let zipped = self.0.iter().zip(state_combination);
+
+        for (&universally_quantified_state, &&state) in zipped {
+            for (i, path) in declarations.iter().enumerate() {
+                if path.start_id == universally_quantified_state {
+                    uq_restrictions[i].push(StartStateProp::EqualTo(state));
+                }
+                if path.end_id == universally_quantified_state {
+                    uq_ms.push(NfaM::end_equal_to(path.id, state));
+                }
+            }
+        }
+
+        (uq_restrictions, uq_ms)
+    }
 }
 
 /// Parsed boolean logic formula tree.
@@ -141,30 +250,30 @@ pub enum BooleanFormula {
 /// Atomic formulas (predicates), the leaves of the boolean logic formula.
 #[derive(Debug, Clone)]
 pub enum Atom {
-    Eq(Var, Var),
-    Prefix(Var, Var),
-    Belongs(Var, String),
-    LessOrEq(Var, Var),
-    Init(usize),
-    Final(usize),
-    ReachInit(usize),
-    ReachFinal(usize),
-}
+    StartInit(PathId),
+    StartFinal(PathId),
+    EndInit(PathId),
+    EndFinal(PathId),
 
-impl From<FormulaToken> for Option<Atom> {
-    fn from(token: FormulaToken) -> Self {
-        match token {
-            FormulaToken::Eq(x, y) => Some(Atom::Eq(x, y)),
-            FormulaToken::Prefix(x, y) => Some(Atom::Prefix(x, y)),
-            FormulaToken::Belongs(x, y) => Some(Atom::Belongs(x, y)),
-            FormulaToken::LessOrEq(x, y) => Some(Atom::LessOrEq(x, y)),
-            FormulaToken::Init(x) => Some(Atom::Init(x)),
-            FormulaToken::Final(x) => Some(Atom::Final(x)),
-            FormulaToken::ReachInit(x) => Some(Atom::ReachInit(x)),
-            FormulaToken::ReachFinal(x) => Some(Atom::ReachFinal(x)),
-            _ => None,
-        }
-    }
+    StartReachInit(PathId),
+    StartReachFinal(PathId),
+    EndReachInit(PathId),
+    EndReachFinal(PathId),
+
+    PathEq(PathId, PathId),
+    InputEq(PathId, PathId),
+    OutputEq(Vec<PathId>, Vec<PathId>),
+    StartStartEq(PathId, PathId),
+    StartEndEq(PathId, PathId),
+    EndStartEq(PathId, PathId),
+    EndEndEq(PathId, PathId),
+
+    InputPrefix(PathId, PathId),
+
+    InputBelongs(PathId, String),
+    OutputBelongs(Vec<PathId>, String),
+
+    InputLenLessOrEq(PathId, PathId),
 }
 
 /// Binary operators.
@@ -186,27 +295,23 @@ impl From<FormulaToken> for Option<BinOp> {
 /// Variable types in a path declaration.
 #[derive(Copy, Clone, Debug)]
 pub enum Var {
-    Path(usize),
-    State(usize),
-    Input(usize),
-    Output(usize),
+    Path(PathId),
+    State(StateId),
+    Input(InputId),
+    Output(OutputId),
 }
 
-struct Vars {
-    path: IdMap<String>,
-    state: IdMap<String>,
-    input: IdMap<String>,
-    output: IdMap<String>,
+#[derive(Default)]
+pub struct Vars {
+    path: IdMap<String, PathId>,
+    state: IdMap<String, StateId>,
+    input: IdMap<String, InputId>,
+    output: IdMap<String, OutputId>,
 }
 
 impl Vars {
     fn new() -> Self {
-        Self {
-            path: IdMap::new(),
-            state: IdMap::new(),
-            input: IdMap::new(),
-            output: IdMap::new(),
-        }
+        Self::default()
     }
 
     fn get_var(&self, name: &String) -> Option<Var> {
@@ -225,6 +330,20 @@ impl Vars {
 
         None
     }
+
+    pub fn get_path_name(&self, path_id: &PathId) -> String {
+        self.path
+            .object(*path_id)
+            .expect("invalid path_id")
+            .to_owned()
+    }
+
+    pub fn get_state_name(&self, state_id: &StateId) -> String {
+        self.state
+            .object(*state_id)
+            .expect("invalid state_id")
+            .to_owned()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -235,15 +354,8 @@ enum FormulaToken {
     Neg,    // !, priority 4
     LParen, // (, priority 0
     RParen, // ), priority 1
-    // Predicates.
-    Eq(Var, Var),         // x = y
-    Prefix(Var, Var),     // x #> y
-    Belongs(Var, String), // x $> L
-    LessOrEq(Var, Var),   // x <= y
-    Init(usize),          // init x
-    Final(usize),         // final x
-    ReachInit(usize),     // reach_init x
-    ReachFinal(usize),    // reach_final x
+
+    Atom(Atom),
 }
 
 impl FormulaToken {
@@ -274,8 +386,21 @@ impl FormulaToken {
 pub fn parse_fml(input: &str) -> Result<PatternFormula, String> {
     let mut declarations = Vec::new();
     let mut vars = Vars::new();
-    let it = input.chars().filter(|c| !c.is_whitespace()).peekable();
-    let mut tokens = util::parse::tokens(it)?.into_iter().peekable();
+    let mut tokens = util::parse::tokens(input)?.into_iter().peekable();
+
+    let mut forall_states = Vec::new();
+
+    while let Some(tok) = tokens.peek()
+        && RawToken::Forall == *tok
+    {
+        tokens.next();
+
+        let Some(RawToken::Name(state_name)) = tokens.next() else {
+            return Err("expected a universally quantified state".to_owned());
+        };
+
+        forall_states.push(state_name);
+    }
 
     let path_no_outputs: Vec<(RawToken, &str)> = vec![
         (RawToken::Name(String::new()), "path identifier"),
@@ -285,7 +410,6 @@ pub fn parse_fml(input: &str) -> Result<PatternFormula, String> {
         (RawToken::Name(String::new()), "input word identifier"),
         (RawToken::Arrow, "arrow `->`"),
         (RawToken::Name(String::new()), "end state identifier"),
-        (RawToken::Comma, "comma `,`"),
     ];
 
     let path_outputs: Vec<(RawToken, &str)> = vec![
@@ -298,7 +422,6 @@ pub fn parse_fml(input: &str) -> Result<PatternFormula, String> {
         (RawToken::Name(String::new()), "output word identifier"),
         (RawToken::Arrow, "arrow `->`"),
         (RawToken::Name(String::new()), "end state identifier"),
-        (RawToken::Comma, "comma `,`"),
     ];
 
     while let Some(tok) = tokens.peek()
@@ -310,41 +433,80 @@ pub fn parse_fml(input: &str) -> Result<PatternFormula, String> {
         let idents = util::parse::parse_line(&mut tokens, &formats)?;
 
         let path = match idents.as_slice() {
-            [path, start, input, end] => Path {
-                id: vars.path.insert(path.to_owned()),
-                start_id: vars.state.insert(start.to_owned()),
-                end_id: vars.state.insert(end.to_owned()),
-                input_id: vars.input.insert(input.to_owned()),
-                output_id: None,
-            },
-            [path, start, input, output, end] => Path {
-                id: vars.path.insert(path.to_owned()),
-                start_id: vars.state.insert(start.to_owned()),
-                end_id: vars.state.insert(end.to_owned()),
-                input_id: vars.input.insert(input.to_owned()),
-                output_id: Some(vars.output.insert(output.to_owned())),
-            },
+            [path, start, input, end] => {
+                if vars.path.contains(path) {
+                    return Err("no implicit path equality allowed".to_owned());
+                }
+
+                Path {
+                    id: vars.path.insert(path.to_owned()),
+                    start_id: vars.state.insert(start.to_owned()),
+                    end_id: vars.state.insert(end.to_owned()),
+                    input_id: vars.input.insert(input.to_owned()),
+                    output_id: None,
+                }
+            }
+            [path, start, input, output, end] => {
+                if vars.path.contains(path) {
+                    return Err("no implicit path equality allowed".to_owned());
+                }
+                if vars.output.contains(output) {
+                    return Err("no implicit output equality allowed".to_owned());
+                }
+
+                Path {
+                    id: vars.path.insert(path.to_owned()),
+                    start_id: vars.state.insert(start.to_owned()),
+                    end_id: vars.state.insert(end.to_owned()),
+                    input_id: vars.input.insert(input.to_owned()),
+                    output_id: Some(vars.output.insert(output.to_owned())),
+                }
+            }
             _ => return Err("invalid line format".to_owned()),
         };
 
         declarations.push(path);
+
+        // Eat comma
+        tokens.next();
     }
 
-    let toks = merge_raw_tokens(tokens, &vars)?;
+    if declarations.is_empty() {
+        return Err("expected atleast 1 existentially quantified path declaration".to_owned());
+    }
+
+    let declarations = Declarations { declarations };
+
+    let mut forall_state_ids = Vec::new();
+
+    for name in forall_states {
+        let Some(state_id) = vars.state.id(&name) else {
+            return Err(format!(
+                "universally quantified variable {name} is not in any path declaration"
+            ));
+        };
+
+        forall_state_ids.push(state_id);
+    }
+
+    let toks = merge_raw_tokens(tokens, &vars, &declarations)?;
     let constraints = construct_tree(toks)?;
 
     Ok(PatternFormula {
-        declarations: Declarations { declarations },
+        forall_states: ForallStates(forall_state_ids),
+        declarations,
         constraints,
+        vars_mapping: vars,
     })
 }
 
 fn merge_raw_tokens(
-    mut it: impl Iterator<Item = RawToken>,
+    mut it: Peekable<impl Iterator<Item = RawToken>>,
     vars: &Vars,
+    declarations: &Declarations,
 ) -> Result<Vec<FormulaToken>, String> {
     let mut toks = Vec::new();
-    // TODO: refactor, error handling
+
     while let Some(x) = it.next() {
         match x {
             RawToken::And => toks.push(FormulaToken::And),
@@ -352,150 +514,361 @@ fn merge_raw_tokens(
             RawToken::Neg => toks.push(FormulaToken::Neg),
             RawToken::LParen => toks.push(FormulaToken::LParen),
             RawToken::RParen => toks.push(FormulaToken::RParen),
-            RawToken::Init => {
-                let Some(RawToken::Name(state)) = it.next() else {
-                    return Err("expected identifier".to_owned());
-                };
-                let id = vars
-                    .state
-                    .id(&state)
-                    .ok_or(format!("undeclared state variable {state}"))?;
+            RawToken::Init => parse_state_predicate(
+                &mut it,
+                &mut toks,
+                vars,
+                declarations,
+                Atom::StartInit,
+                Atom::EndInit,
+            )?,
+            RawToken::Final => parse_state_predicate(
+                &mut it,
+                &mut toks,
+                vars,
+                declarations,
+                Atom::StartFinal,
+                Atom::EndFinal,
+            )?,
+            RawToken::ReachInit => parse_state_predicate(
+                &mut it,
+                &mut toks,
+                vars,
+                declarations,
+                Atom::StartReachInit,
+                Atom::EndReachInit,
+            )?,
+            RawToken::ReachFinal => parse_state_predicate(
+                &mut it,
+                &mut toks,
+                vars,
+                declarations,
+                Atom::StartReachFinal,
+                Atom::EndReachFinal,
+            )?,
+            RawToken::Name(var1_name) => {
+                let term1 = parse_term(&mut it, var1_name)?;
 
-                toks.push(FormulaToken::Init(id));
-            }
-            RawToken::Final => {
-                let Some(RawToken::Name(state)) = it.next() else {
-                    return Err("expected identifier".to_owned());
-                };
-                let id = vars
-                    .state
-                    .id(&state)
-                    .ok_or(format!("undeclared state variable {state}"))?;
-
-                toks.push(FormulaToken::Final(id));
-            }
-            RawToken::ReachInit => {
-                let Some(RawToken::Name(state)) = it.next() else {
-                    return Err("expected identifier".to_owned());
-                };
-                let id = vars
-                    .state
-                    .id(&state)
-                    .ok_or(format!("undeclared state variable {state}"))?;
-
-                toks.push(FormulaToken::ReachInit(id));
-            }
-            RawToken::ReachFinal => {
-                let Some(RawToken::Name(state)) = it.next() else {
-                    return Err("expected identifier".to_owned());
-                };
-                let id = vars
-                    .state
-                    .id(&state)
-                    .ok_or(format!("undeclared state variable {state}"))?;
-
-                toks.push(FormulaToken::ReachFinal(id));
-            }
-            RawToken::Name(first_op) => {
                 let Some(op) = it.next() else {
                     return Err("expected binary operator".to_owned());
                 };
 
-                let Some(RawToken::Name(second_op)) = it.next() else {
+                let Some(RawToken::Name(var2_name)) = it.next() else {
                     return Err("expected identifier after binary operator".to_owned());
                 };
+                let term2 = parse_term(&mut it, var2_name)?;
 
                 let atom: FormulaToken = match op {
-                    RawToken::Eq => {
-                        let var1 = vars
-                            .get_var(&first_op)
-                            .ok_or(format!("undeclared variable {first_op}"))?;
-                        let var2 = vars
-                            .get_var(&second_op)
-                            .ok_or(format!("undeclared variable {second_op}"))?;
-
-                        match (&var1, &var2) {
-                            (Var::State(_), Var::State(_))
-                            | (Var::Path(_), Var::Path(_))
-                            | (Var::Input(_), Var::Input(_))
-                            | (Var::Output(_), Var::Output(_)) => FormulaToken::Eq(var1, var2),
-                            _ => {
-                                return Err(format!(
-                                    "wrong types in '=' ({first_op} vs {second_op})"
-                                ));
-                            }
-                        }
-                    }
-                    RawToken::Prefix => {
-                        let var1 = vars
-                            .get_var(&first_op)
-                            .ok_or(format!("undeclared input word variable {first_op}"))?;
-                        let var2 = vars
-                            .get_var(&second_op)
-                            .ok_or(format!("undeclared input word variable {second_op}"))?;
-
-                        match (&var1, &var2) {
-                            (Var::Input(_), Var::Input(_)) | (Var::Output(_), Var::Output(_)) => {
-                                FormulaToken::Prefix(var1, var2)
-                            }
-                            _ => {
-                                return Err(format!(
-                                    "wrong types in '#>' ({first_op} vs {second_op})"
-                                ));
-                            }
-                        }
-                    }
-                    RawToken::LangBelong => {
-                        let var = vars
-                            .get_var(&first_op)
-                            .ok_or(format!("undeclared input word variable {first_op}"))?;
-
-                        match &var {
-                            Var::Input(_) | Var::Output(_) => FormulaToken::Belongs(var, second_op),
-                            _ => {
-                                return Err(format!(
-                                    "wrong type in '$>' ({first_op} is not an input/output word variable)"
-                                ));
-                            }
-                        }
-                    }
-                    RawToken::LessEq => {
-                        let var1 = vars
-                            .get_var(&first_op)
-                            .ok_or(format!("undeclared input word variable {first_op}"))?;
-                        let var2 = vars
-                            .get_var(&second_op)
-                            .ok_or(format!("undeclared input word variable {second_op}"))?;
-
-                        match (&var1, &var2) {
-                            (Var::Input(_), Var::Input(_)) | (Var::Output(_), Var::Output(_)) => {
-                                FormulaToken::LessOrEq(var1, var2)
-                            }
-                            _ => {
-                                return Err(format!(
-                                    "wrong types in '<=' ({first_op} vs {second_op})"
-                                ));
-                            }
-                        }
-                    }
+                    RawToken::Eq => parse_eq(term1, term2, vars, declarations)?,
+                    RawToken::Prefix => parse_prefix(term1, term2, vars, declarations)?,
+                    RawToken::LangBelong => parse_lang_belong(term1, term2, vars, declarations)?,
+                    RawToken::LessEq => parse_less_or_eq(term1, term2, vars, declarations)?,
                     _ => return Err(format!("unknown binary operator {op:?}")),
                 };
 
                 toks.push(atom);
             }
-            RawToken::Arrow
-            | RawToken::Colon
-            | RawToken::Comma
-            | RawToken::DoubleMinus
-            | RawToken::Exists
-            | RawToken::Eq
-            | RawToken::LangBelong
-            | RawToken::LessEq
-            | RawToken::Prefix => (),
+            _ => (),
         }
     }
 
     Ok(toks)
+}
+
+enum Term {
+    Name(String),
+    Plus(Vec<String>),
+    Concat(Vec<String>),
+}
+
+fn parse_term(
+    it: &mut Peekable<impl Iterator<Item = RawToken>>,
+    first_var: String,
+) -> Result<Term, String> {
+    match it.peek() {
+        Some(RawToken::Plus) => {
+            let mut term = vec![first_var];
+
+            while let Some(RawToken::Plus) = it.peek() {
+                it.next();
+
+                let Some(RawToken::Name(var)) = it.next() else {
+                    return Err("expected variable name after `+`".to_owned());
+                };
+                term.push(var);
+            }
+
+            Ok(Term::Plus(term))
+        }
+        Some(RawToken::Dot) => {
+            let mut term = vec![first_var];
+
+            while let Some(RawToken::Dot) = it.peek() {
+                it.next();
+
+                let Some(RawToken::Name(var)) = it.next() else {
+                    return Err("expected variable name after `.`".to_owned());
+                };
+                term.push(var);
+            }
+
+            Ok(Term::Concat(term))
+        }
+        _ => Ok(Term::Name(first_var)),
+    }
+}
+
+fn parse_state_predicate(
+    it: &mut impl Iterator<Item = RawToken>,
+    toks: &mut Vec<FormulaToken>,
+    vars: &Vars,
+    declarations: &Declarations,
+    start_atom: fn(PathId) -> Atom,
+    end_atom: fn(PathId) -> Atom,
+) -> Result<(), String> {
+    let Some(RawToken::Name(var_name)) = it.next() else {
+        return Err("expected identifier".to_owned());
+    };
+    let state_id = vars
+        .state
+        .id(&var_name)
+        .ok_or(format!("undeclared state variable {var_name}"))?;
+
+    if let Some(pi) = declarations.path_id_by_start_state(state_id) {
+        toks.push(FormulaToken::Atom(start_atom(pi)));
+    } else if let Some(pi) = declarations.path_id_by_end_state(state_id) {
+        toks.push(FormulaToken::Atom(end_atom(pi)))
+    } else {
+        return Err("unknown state variable".into());
+    }
+    Ok(())
+}
+
+fn extract_output_pis(
+    vars: &Vars,
+    declarations: &Declarations,
+    term: Vec<String>,
+) -> Result<Vec<PathId>, String> {
+    let term_vars: Vec<_> = term
+        .iter()
+        .map(|v| vars.get_var(v).ok_or(format!("undeclared variable {v}")))
+        .collect::<Result<_, _>>()?;
+
+    let output_ids: Vec<_> = term_vars
+        .iter()
+        .map(|v| match v {
+            &Var::Output(id) => Ok(id),
+            _ => Err("only output variable terms allowed".to_owned()),
+        })
+        .collect::<Result<_, _>>()?;
+
+    let pis = output_ids
+        .iter()
+        .map(|&id| declarations.path_id_by_output_var(id))
+        .collect();
+
+    Ok(pis)
+}
+
+fn parse_out_eq(
+    term1: Term,
+    term2: Term,
+    vars: &Vars,
+    declarations: &Declarations,
+) -> Result<FormulaToken, String> {
+    match (term1, term2) {
+        (Term::Plus(term1), Term::Plus(term2)) => {
+            let pis1 = extract_output_pis(vars, declarations, term1)?;
+            let pis2 = extract_output_pis(vars, declarations, term2)?;
+
+            Ok(FormulaToken::Atom(Atom::OutputEq(pis1, pis2)))
+        }
+        (Term::Name(term1), Term::Plus(term2)) => {
+            let pis1 = extract_output_pis(vars, declarations, vec![term1])?;
+            let pis2 = extract_output_pis(vars, declarations, term2)?;
+
+            Ok(FormulaToken::Atom(Atom::OutputEq(pis1, pis2)))
+        }
+        (Term::Plus(term1), Term::Name(term2)) => {
+            let pis1 = extract_output_pis(vars, declarations, term1)?;
+            let pis2 = extract_output_pis(vars, declarations, vec![term2])?;
+
+            Ok(FormulaToken::Atom(Atom::OutputEq(pis1, pis2)))
+        }
+        _ => Err("wrong type in '<=' (no concat terms allowed)".to_owned()),
+    }
+}
+
+fn parse_eq(
+    term1: Term,
+    term2: Term,
+    vars: &Vars,
+    declarations: &Declarations,
+) -> Result<FormulaToken, String> {
+    let (Term::Name(var1_name), Term::Name(var2_name)) = (&term1, &term2) else {
+        return parse_out_eq(term1, term2, vars, declarations);
+    };
+
+    let var1 = vars
+        .get_var(var1_name)
+        .ok_or(format!("undeclared variable {var1_name}"))?;
+    let var2 = vars
+        .get_var(var2_name)
+        .ok_or(format!("undeclared variable {var2_name}"))?;
+
+    match (var1, var2) {
+        (Var::State(var1), Var::State(var2)) => {
+            if let Some(pi1) = declarations.path_id_by_start_state(var1) {
+                if let Some(pi2) = declarations.path_id_by_start_state(var2) {
+                    Ok(FormulaToken::Atom(Atom::StartStartEq(pi1, pi2)))
+                } else if let Some(path2) = declarations.path_id_by_end_state(var2) {
+                    Ok(FormulaToken::Atom(Atom::StartEndEq(pi1, path2)))
+                } else {
+                    Err(format!("unknown state variable {var2_name}"))
+                }
+            } else if let Some(path1) = declarations.path_id_by_end_state(var1) {
+                if let Some(path2) = declarations.path_id_by_start_state(var2) {
+                    Ok(FormulaToken::Atom(Atom::EndStartEq(path1, path2)))
+                } else if let Some(path2) = declarations.path_id_by_end_state(var2) {
+                    Ok(FormulaToken::Atom(Atom::EndEndEq(path1, path2)))
+                } else {
+                    Err(format!("unknown state variable {var2_name}"))
+                }
+            } else {
+                Err(format!("unknown state variable {var1_name}"))
+            }
+        }
+        (Var::Path(var1), Var::Path(var2)) => Ok(FormulaToken::Atom(Atom::PathEq(var1, var2))),
+        (Var::Input(var1), Var::Input(var2)) => {
+            let pi1 = declarations.path_id_by_input_var(var1);
+            let pi2 = declarations.path_id_by_input_var(var2);
+
+            Ok(FormulaToken::Atom(Atom::InputEq(pi1, pi2)))
+        }
+        (Var::Output(var1), Var::Output(var2)) => {
+            let pi1 = declarations.path_id_by_output_var(var1);
+            let pi2 = declarations.path_id_by_output_var(var2);
+
+            Ok(FormulaToken::Atom(Atom::OutputEq(vec![pi1], vec![pi2])))
+        }
+        _ => Err(format!(
+            "mismatched types in '=' ({var1_name} vs {var2_name})"
+        )),
+    }
+}
+
+fn parse_prefix(
+    term1: Term,
+    term2: Term,
+    vars: &Vars,
+    declarations: &Declarations,
+) -> Result<FormulaToken, String> {
+    let (Term::Name(var1_name), Term::Name(var2_name)) = (term1, term2) else {
+        return Err("expected a single variable name, found term in '#>".to_owned());
+    };
+
+    let var1 = vars
+        .get_var(&var1_name)
+        .ok_or(format!("undeclared input word variable {var1_name}"))?;
+    let var2 = vars
+        .get_var(&var2_name)
+        .ok_or(format!("undeclared input word variable {var2_name}"))?;
+
+    match (var1, var2) {
+        (Var::Input(var1), Var::Input(var2)) => {
+            let pi1 = declarations.path_id_by_input_var(var1);
+            let pi2 = declarations.path_id_by_input_var(var2);
+
+            Ok(FormulaToken::Atom(Atom::InputPrefix(pi1, pi2)))
+        }
+        _ => Err(format!("wrong types in '#>' ({var1_name}, {var2_name})")),
+    }
+}
+
+fn parse_lang_belong(
+    term1: Term,
+    term2: Term,
+    vars: &Vars,
+    declarations: &Declarations,
+) -> Result<FormulaToken, String> {
+    let Term::Name(lang_var) = term2 else {
+        return Err("found term, expected language variable".to_owned());
+    };
+
+    match term1 {
+        Term::Name(var_name) => {
+            let var = vars
+                .get_var(&var_name)
+                .ok_or(format!("undeclared input/output word variable {var_name}"))?;
+
+            match var {
+                Var::Input(var) => {
+                    let pi = declarations.path_id_by_input_var(var);
+                    Ok(FormulaToken::Atom(Atom::InputBelongs(pi, lang_var)))
+                }
+                Var::Output(var) => {
+                    let pi = declarations.path_id_by_output_var(var);
+                    Ok(FormulaToken::Atom(Atom::OutputBelongs(vec![pi], lang_var)))
+                }
+                _ => Err(format!(
+                    "wrong type in '$>' ({var_name} is not an input/output word variable)"
+                )),
+            }
+        }
+        Term::Concat(term) => {
+            let term_vars: Vec<_> = term
+                .iter()
+                .map(|v| {
+                    vars.get_var(v)
+                        .ok_or(format!("undeclared input/output word variable {v}"))
+                })
+                .collect::<Result<_, _>>()?;
+
+            let output_ids: Vec<_> = term_vars
+                .iter()
+                .map(|v| match v {
+                    &Var::Output(id) => Ok(id),
+                    _ => Err("only output variable terms in '$>' allowed".to_owned()),
+                })
+                .collect::<Result<_, _>>()?;
+
+            let pis: Vec<_> = output_ids
+                .iter()
+                .map(|&id| declarations.path_id_by_output_var(id))
+                .collect();
+
+            Ok(FormulaToken::Atom(Atom::OutputBelongs(pis, lang_var)))
+        }
+        Term::Plus(_) => Err("wrong type in '$>' (no sum terms allowed)".to_owned()),
+    }
+}
+
+fn parse_less_or_eq(
+    term1: Term,
+    term2: Term,
+    vars: &Vars,
+    declarations: &Declarations,
+) -> Result<FormulaToken, String> {
+    let (Term::Name(var1_name), Term::Name(var2_name)) = (term1, term2) else {
+        return Err("expected a single variable name, found term in '<='".to_owned());
+    };
+
+    let var1 = vars
+        .get_var(&var1_name)
+        .ok_or(format!("undeclared input word variable {var1_name}"))?;
+    let var2 = vars
+        .get_var(&var2_name)
+        .ok_or(format!("undeclared input word variable {var2_name}"))?;
+
+    match (var1, var2) {
+        (Var::Input(var1), Var::Input(var2)) => {
+            let pi1 = declarations.path_id_by_input_var(var1);
+            let pi2 = declarations.path_id_by_input_var(var2);
+
+            Ok(FormulaToken::Atom(Atom::InputLenLessOrEq(pi1, pi2)))
+        }
+        _ => Err(format!("wrong types in '<=' ({var1_name} vs {var2_name})")),
+    }
 }
 
 // Shunting Yard Algorithm by E.W. Dijkstra.
@@ -536,7 +909,7 @@ fn construct_tree(tokens: Vec<FormulaToken>) -> Result<BooleanFormula, &'static 
 
             operator_stack.push(incoming);
         } else {
-            let Some(n) = Option::<Atom>::from(incoming) else {
+            let FormulaToken::Atom(n) = incoming else {
                 return Err("expected atom, got something else");
             };
 
@@ -552,8 +925,9 @@ fn construct_tree(tokens: Vec<FormulaToken>) -> Result<BooleanFormula, &'static 
         }
     }
 
-    assert!(output_stack.len() == 1, "output stack malformed");
-
+    if output_stack.len() != 1 {
+        return Err("invalid formula");
+    }
     let tree = output_stack
         .pop()
         .ok_or("failed to finish parsing formula")?;

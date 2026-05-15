@@ -1,4 +1,4 @@
-use plmca::eval;
+use plmca::model_check;
 use std::fs;
 use std::path::Path;
 
@@ -19,7 +19,7 @@ fn examples() {
         let langs = if lang_string.is_empty() {
             vec![]
         } else {
-            vec![("L".to_owned(), lang_string)]
+            vec![("L", lang_string.as_str())]
         };
 
         for file in fs::read_dir(path).unwrap() {
@@ -35,9 +35,8 @@ fn examples() {
 
             println!("testing formula {formula_path:?} with automaton {path:?}");
 
-            let result = eval::run(formula_string.clone(), fa_string, langs.clone()).unwrap();
-            println!("result={result}");
-            let satisfied = !result.is_empty();
+            let (satisfied, model) = model_check::run(&formula_string, &fa_string, &langs).unwrap();
+            println!("result={model:?}");
 
             assert!(
                 expect == satisfied,

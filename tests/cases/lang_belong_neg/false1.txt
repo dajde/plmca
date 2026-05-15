@@ -1,0 +1,3 @@
+_start -> p1 : a
+p1 -> p2 : b
+p2 -> end* : c

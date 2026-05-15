@@ -84,6 +84,7 @@ pub fn parse_line<T: TokenName + Eq + Debug>(
 /// Lexical analysis token without any processing.
 #[derive(Debug, Eq, PartialEq)]
 pub enum RawToken {
+    Forall,       // "forall"
     Exists,       // "exists"
     Name(String), // any alphanumeric string
     Colon,        // ":"
@@ -103,6 +104,8 @@ pub enum RawToken {
     RParen,       // ")"
     DoubleMinus,  // "--"
     Arrow,        // "->"
+    Plus,         // "+"
+    Dot,          // "."
 }
 
 impl TokenName for RawToken {
@@ -114,81 +117,97 @@ impl TokenName for RawToken {
     }
 }
 
-fn consume_and_check(
-    it: &mut Peekable<impl Iterator<Item = char>>,
-    arr: Vec<(char, RawToken)>,
-) -> Option<RawToken> {
-    let t: String = it.by_ref().take(2).collect();
-    assert!(t.len() == 2);
-    for (c, tok) in arr {
-        if t.ends_with(c) {
-            return Some(tok);
-        }
-    }
-
-    None
-}
-
-fn consume(it: &mut Peekable<impl Iterator<Item = char>>, tok: RawToken) -> Option<RawToken> {
-    it.next();
-    Some(tok)
-}
-
-fn consume_name(it: &mut Peekable<impl Iterator<Item = char>>) -> Option<RawToken> {
+fn consume_name(bytes: &[u8], i: &mut usize) -> Option<RawToken> {
     let mut t = String::new();
-    while let Some(&c) = it.peek() {
-        if !(c.is_alphanumeric() || c == '_' || c == '*') {
+
+    while *i < bytes.len() {
+        let c = bytes[*i];
+
+        if !c.is_ascii() {
+            return None;
+        }
+
+        if !(c.is_ascii_alphanumeric() || c == b'_' || c == b'*' || c == b'|' || c == b'-') {
             break;
         }
-        t.push(it.next().unwrap());
 
-        match t.as_str() {
-            "exists" => return Some(RawToken::Exists),
-            "init" => return Some(RawToken::Init),
-            "final" => return Some(RawToken::Final),
-            "reach_init" => return Some(RawToken::ReachInit),
-            "reach_final" => return Some(RawToken::ReachFinal),
-            _ => continue,
-        }
+        t.push(c as char);
+        *i += 1;
     }
 
     if t.is_empty() {
         return None;
     }
 
-    Some(RawToken::Name(t))
+    match t.as_str() {
+        "forall" => Some(RawToken::Forall),
+        "exists" => Some(RawToken::Exists),
+        "init" => Some(RawToken::Init),
+        "final" => Some(RawToken::Final),
+        "reach_init" => Some(RawToken::ReachInit),
+        "reach_final" => Some(RawToken::ReachFinal),
+        _ => Some(RawToken::Name(t)),
+    }
 }
 
 /// Get the lexed tokens from the given character iterator.
-pub fn tokens(mut it: Peekable<impl Iterator<Item = char>>) -> Result<Vec<RawToken>, String> {
+pub fn tokens(stream: &str) -> Result<Vec<RawToken>, String> {
+    let bytes = stream.as_bytes();
     let mut toks = Vec::new();
+    let mut i = 0;
 
-    while let Some(c) = it.peek() {
-        let opt_t = match c {
-            '/' => consume_and_check(&mut it, vec![('\\', RawToken::And)]),
-            '\\' => consume_and_check(&mut it, vec![('/', RawToken::Or)]),
-            ':' => consume(&mut it, RawToken::Colon),
-            ',' => consume(&mut it, RawToken::Comma),
-            '(' => consume(&mut it, RawToken::LParen),
-            ')' => consume(&mut it, RawToken::RParen),
-            '!' => consume(&mut it, RawToken::Neg),
-            '=' => consume(&mut it, RawToken::Eq),
-            '<' => consume_and_check(&mut it, vec![('=', RawToken::LessEq)]),
-            '#' => consume_and_check(&mut it, vec![('>', RawToken::Prefix)]),
-            '$' => consume_and_check(&mut it, vec![('>', RawToken::LangBelong)]),
-            '-' => consume_and_check(
-                &mut it,
-                vec![('-', RawToken::DoubleMinus), ('>', RawToken::Arrow)],
-            ),
-            _ => consume_name(&mut it),
+    while i < bytes.len() {
+        let c = bytes[i];
+
+        if c.is_ascii_whitespace() {
+            i += 1;
+            continue;
+        }
+
+        if i + 2 <= bytes.len() {
+            let tok = match &bytes[i..i + 2] {
+                b"/\\" => Some(RawToken::And),
+                b"\\/" => Some(RawToken::Or),
+                b"->" => Some(RawToken::Arrow),
+                b"--" => Some(RawToken::DoubleMinus),
+                b"$>" => Some(RawToken::LangBelong),
+                b"#>" => Some(RawToken::Prefix),
+                b"<=" => Some(RawToken::LessEq),
+                _ => None,
+            };
+
+            if let Some(t) = tok {
+                i += 2;
+                toks.push(t);
+                continue;
+            }
+        }
+
+        let tok = match &bytes[i] {
+            b':' => Some(RawToken::Colon),
+            b',' => Some(RawToken::Comma),
+            b'(' => Some(RawToken::LParen),
+            b')' => Some(RawToken::RParen),
+            b'!' => Some(RawToken::Neg),
+            b'=' => Some(RawToken::Eq),
+            b'+' => Some(RawToken::Plus),
+            b'.' => Some(RawToken::Dot),
+            _ => None,
         };
 
-        if let Some(t) = opt_t {
+        if let Some(t) = tok {
+            i += 1;
             toks.push(t);
-        } else {
-            return Err("unknown token".to_owned());
+            continue;
         }
-    }
 
+        let tok = consume_name(bytes, &mut i);
+
+        let Some(t) = tok else {
+            return Err("syntax error".to_owned());
+        };
+
+        toks.push(t);
+    }
     Ok(toks)
 }

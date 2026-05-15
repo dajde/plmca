@@ -1,9 +1,13 @@
 //! Construction of automata encoding PL literals.
 
 use crate::{
-    automaton::{LangDfa, OutputNumber, OutputType, State, TargetNfa, TransOn},
-    formula::{Atom, Declarations, Var, simplify::Literal},
+    automaton::{
+        LangDfa, Letter, OutputLetter, OutputNumber, OutputType, ReachSets, State, TargetNfa,
+        TransOn,
+    },
+    formula::{Atom, PathId, simplify::Literal},
     paths_n::{PathSymbol, PathTuple},
+    util,
 };
 use std::{
     borrow::Cow,
@@ -12,341 +16,79 @@ use std::{
 
 const INIT: State = State(usize::MAX); // initial state constant
 const FIN: State = State(usize::MAX - 1); // final state constant
+const TRAP: State = State(usize::MAX - 2); // trap state constant
 
 /// `NfaM` represents the automaton encoding a single PL_NFA literal.
 #[derive(Clone, Debug)]
 pub struct NfaM<'a> {
-    pub init: State,
-    pub fin: BTreeSet<State>,
-    pred: Predicate,
-    i: usize,
-    j: usize,
-    condition_set: Option<&'a BTreeSet<State>>,
-    lang_dfa: Option<LangDfa>,
+    init: State,
+    fin: BTreeSet<State>,
+    pred: Predicate<'a>,
 }
 
-#[derive(Clone, Copy, Debug)]
-enum Predicate {
-    InputPrefix,
-    InputEq,
-    LangBelong,
-    InputLength,
-    PathEq,
-    StartBelongsTo,
-    EndBelongsTo,
-    StartStartEq,
-    EndEndEq,
-    StartEndEq,
-    EndStartEq,
+#[derive(Clone, Debug)]
+enum Predicate<'a> {
+    InputPrefix { i: PathId, j: PathId },
+    InputEq { i: PathId, j: PathId },
+    InputLangBelong { i: PathId, lang: LangDfa },
+    InputLength { i: PathId, j: PathId },
+    PathEq { i: PathId, j: PathId },
+    EndBelongsTo { i: PathId, set: &'a BTreeSet<State> },
+    EndEqualTo { i: PathId, s: State },
+    StartStartEq { i: PathId, j: PathId },
+    EndEndEq { i: PathId, j: PathId },
+    StartEndEq { i: PathId, j: PathId },
+    EndStartEq { i: PathId, j: PathId },
 
-    NotInputPrefix,
-    NotInputEq,
-    NotInputLength,
-    NotPathEq,
-    NotStartBelongsTo,
-    NotEndBelongsTo,
-    NotStartStartEq,
-    NotEndEndEq,
-    NotStartEndEq,
-    NotEndStartEq,
+    NotInputPrefix { i: PathId, j: PathId },
+    NotInputEq { i: PathId, j: PathId },
+    NotInputLength { i: PathId, j: PathId },
+    NotPathEq { i: PathId, j: PathId },
+    NotEndBelongsTo { i: PathId, set: &'a BTreeSet<State> },
+    NotStartStartEq { i: PathId, j: PathId },
+    NotEndEndEq { i: PathId, j: PathId },
+    NotStartEndEq { i: PathId, j: PathId },
+    NotEndStartEq { i: PathId, j: PathId },
 }
 
-impl<'a> NfaM<'a> {
+impl<'a> Predicate<'a> {
     fn trans(&self, state: State, letter: &PathTuple) -> Cow<'static, [State]> {
-        match self.pred {
-            Predicate::InputPrefix => self.prefix_trans(state, letter),
-            Predicate::InputEq => self.input_eq_trans(state, letter),
-            Predicate::LangBelong => self.lang_belong_trans(state, letter),
-            Predicate::InputLength => self.length_trans(state, letter),
-            Predicate::PathEq => self.path_eq_trans(state, letter),
-            Predicate::StartBelongsTo => self.start_belongs_to_trans(state, letter),
-            Predicate::EndBelongsTo => self.end_belongs_to_trans(state, letter),
-            Predicate::StartStartEq => self.init_init_eq_trans(state, letter),
-            Predicate::EndEndEq => self.final_final_eq_trans(state, letter),
-            Predicate::StartEndEq => self.init_final_eq_trans(state, letter),
-            Predicate::EndStartEq => self.final_init_eq_trans(state, letter),
+        use Predicate::*;
+        match self {
+            InputPrefix { i, j } => Self::prefix_trans(state, letter, *i, *j),
+            InputEq { i, j } => Self::input_eq_trans(state, letter, *i, *j),
+            InputLangBelong { i, lang } => Self::input_lang_belong_trans(state, letter, *i, lang),
+            InputLength { i, j } => Self::length_trans(state, letter, *i, *j),
+            PathEq { i, j } => Self::path_eq_trans(state, letter, *i, *j),
+            EndBelongsTo { i, set } => Self::end_belongs_to_trans(state, letter, *i, set),
+            EndEqualTo { i, s } => Self::end_equal_to_trans(state, letter, *i, *s),
+            StartStartEq { i, j } => Self::init_init_eq_trans(state, letter, *i, *j),
+            EndEndEq { i, j } => Self::final_final_eq_trans(state, letter, *i, *j),
+            StartEndEq { i, j } => Self::init_final_eq_trans(state, letter, *i, *j),
+            EndStartEq { i, j } => Self::final_init_eq_trans(state, letter, *i, *j),
 
-            Predicate::NotInputPrefix => self.not_prefix_trans(state, letter),
-            Predicate::NotInputEq => self.not_input_eq_trans(state, letter),
-            Predicate::NotInputLength => self.not_length_trans(state, letter),
-            Predicate::NotPathEq => self.not_path_eq_trans(state, letter),
-            Predicate::NotStartBelongsTo => self.not_start_belongs_to_trans(state, letter),
-            Predicate::NotEndBelongsTo => self.not_end_belongs_to_trans(state, letter),
-            Predicate::NotStartStartEq => self.not_init_init_eq_trans(state, letter),
-            Predicate::NotEndEndEq => self.not_final_final_eq_trans(state, letter),
-            Predicate::NotStartEndEq => self.not_init_final_eq_trans(state, letter),
-            Predicate::NotEndStartEq => self.not_final_init_eq_trans(state, letter),
+            NotInputPrefix { i, j } => Self::not_prefix_trans(state, letter, *i, *j),
+            NotInputEq { i, j } => Self::not_input_eq_trans(state, letter, *i, *j),
+            NotInputLength { i, j } => Self::not_length_trans(state, letter, *i, *j),
+            NotPathEq { i, j } => Self::not_path_eq_trans(state, letter, *i, *j),
+            NotEndBelongsTo { i, set } => Self::not_end_belongs_to_trans(state, letter, *i, set),
+            NotStartStartEq { i, j } => Self::not_init_init_eq_trans(state, letter, *i, *j),
+            NotEndEndEq { i, j } => Self::not_final_final_eq_trans(state, letter, *i, *j),
+            NotStartEndEq { i, j } => Self::not_init_final_eq_trans(state, letter, *i, *j),
+            NotEndStartEq { i, j } => Self::not_final_init_eq_trans(state, letter, *i, *j),
         }
     }
 
-    /// Construct an `NfaM` for the prefix predicate.
-    pub fn prefix(is_neg: bool, i: usize, j: usize) -> NfaM<'a> {
-        if is_neg {
-            NfaM {
-                init: INIT,
-                fin: BTreeSet::from([FIN]),
-                pred: Predicate::NotInputPrefix,
-                i,
-                j,
-                condition_set: None,
-                lang_dfa: None,
-            }
-        } else {
-            NfaM {
-                init: INIT,
-                fin: BTreeSet::from([INIT]),
-                pred: Predicate::InputPrefix,
-                i,
-                j,
-                condition_set: None,
-                lang_dfa: None,
-            }
-        }
-    }
-
-    /// Construct an `NfaM` for the input equality.
-    pub fn input_eq(is_neg: bool, i: usize, j: usize) -> NfaM<'a> {
-        if is_neg {
-            NfaM {
-                init: INIT,
-                fin: BTreeSet::from([FIN]),
-                pred: Predicate::NotInputEq,
-                i,
-                j,
-                condition_set: None,
-                lang_dfa: None,
-            }
-        } else {
-            NfaM {
-                init: INIT,
-                fin: BTreeSet::from([INIT]),
-                pred: Predicate::InputEq,
-                i,
-                j,
-                condition_set: None,
-                lang_dfa: None,
-            }
-        }
-    }
-
-    /// Construct an `NfaM` for the language inclusion predicate.
-    pub fn lang_belong(i: usize, lang_dfa: LangDfa) -> NfaM<'a> {
-        NfaM {
-            init: lang_dfa.init,
-            fin: lang_dfa.fin.clone(),
-            pred: Predicate::LangBelong,
-            i,
-            j: 0,
-            condition_set: None,
-            lang_dfa: Some(lang_dfa),
-        }
-    }
-
-    /// Construct an `NfaM` for the length comparison predicate.
-    pub fn length(is_neg: bool, i: usize, j: usize) -> NfaM<'a> {
-        if is_neg {
-            NfaM {
-                init: INIT,
-                fin: BTreeSet::from([FIN]),
-                pred: Predicate::NotInputLength,
-                i,
-                j,
-                condition_set: None,
-                lang_dfa: None,
-            }
-        } else {
-            NfaM {
-                init: INIT,
-                fin: BTreeSet::from([INIT]),
-                pred: Predicate::InputLength,
-                i,
-                j,
-                condition_set: None,
-                lang_dfa: None,
-            }
-        }
-    }
-
-    /// Construct an `NfaM` for the path equality predicate.
-    pub fn path_eq(is_neg: bool, i: usize, j: usize) -> NfaM<'a> {
-        if is_neg {
-            NfaM {
-                init: INIT,
-                fin: BTreeSet::from([FIN]),
-                pred: Predicate::NotPathEq,
-                i,
-                j,
-                condition_set: None,
-                lang_dfa: None,
-            }
-        } else {
-            NfaM {
-                init: INIT,
-                fin: BTreeSet::from([INIT]),
-                pred: Predicate::PathEq,
-                i,
-                j,
-                condition_set: None,
-                lang_dfa: None,
-            }
-        }
-    }
-
-    /// Construct an `NfaM` for the "start state belongs to" predicate.
-    pub fn start_belongs_to(is_neg: bool, i: usize, condition_set: &BTreeSet<State>) -> NfaM<'_> {
-        if is_neg {
-            NfaM {
-                init: INIT,
-                fin: BTreeSet::from([FIN]),
-                pred: Predicate::NotStartBelongsTo,
-                i,
-                j: 0,
-                condition_set: Some(condition_set),
-                lang_dfa: None,
-            }
-        } else {
-            NfaM {
-                init: INIT,
-                fin: BTreeSet::from([FIN]),
-                pred: Predicate::StartBelongsTo,
-                i,
-                j: 0,
-                condition_set: Some(condition_set),
-                lang_dfa: None,
-            }
-        }
-    }
-
-    /// Construct an `NfaM` for the "end state belongs to" predicate.
-    pub fn end_belongs_to(is_neg: bool, i: usize, condition_set: &BTreeSet<State>) -> NfaM<'_> {
-        if is_neg {
-            NfaM {
-                init: INIT,
-                fin: BTreeSet::from([FIN]),
-                pred: Predicate::NotEndBelongsTo,
-                i,
-                j: 0,
-                condition_set: Some(condition_set),
-                lang_dfa: None,
-            }
-        } else {
-            NfaM {
-                init: INIT,
-                fin: BTreeSet::from([FIN]),
-                pred: Predicate::EndBelongsTo,
-                i,
-                j: 0,
-                condition_set: Some(condition_set),
-                lang_dfa: None,
-            }
-        }
-    }
-
-    /// Construct an `NfaM` for the start state equality predicate.
-    pub fn start_start_eq(is_neg: bool, i: usize, j: usize) -> NfaM<'a> {
-        if is_neg {
-            NfaM {
-                init: INIT,
-                fin: BTreeSet::from([FIN]),
-                pred: Predicate::NotStartStartEq,
-                i,
-                j,
-                condition_set: None,
-                lang_dfa: None,
-            }
-        } else {
-            NfaM {
-                init: INIT,
-                fin: BTreeSet::from([FIN]),
-                pred: Predicate::StartStartEq,
-                i,
-                j,
-                condition_set: None,
-                lang_dfa: None,
-            }
-        }
-    }
-
-    /// Construct an `NfaM` for the end state equality predicate.
-    pub fn end_end_eq(is_neg: bool, i: usize, j: usize) -> NfaM<'a> {
-        if is_neg {
-            NfaM {
-                init: INIT,
-                fin: BTreeSet::from([FIN]),
-                pred: Predicate::NotEndEndEq,
-                i,
-                j,
-                condition_set: None,
-                lang_dfa: None,
-            }
-        } else {
-            NfaM {
-                init: INIT,
-                fin: BTreeSet::from([FIN]),
-                pred: Predicate::EndEndEq,
-                i,
-                j,
-                condition_set: None,
-                lang_dfa: None,
-            }
-        }
-    }
-
-    /// Construct an `NfaM` for the start/end state equality predicate.
-    pub fn start_end_eq(is_neg: bool, i: usize, j: usize) -> NfaM<'a> {
-        if is_neg {
-            NfaM {
-                init: INIT,
-                fin: BTreeSet::from([FIN]),
-                pred: Predicate::NotStartEndEq,
-                i,
-                j,
-                condition_set: None,
-                lang_dfa: None,
-            }
-        } else {
-            NfaM {
-                init: INIT,
-                fin: BTreeSet::from([FIN]),
-                pred: Predicate::StartEndEq,
-                i,
-                j,
-                condition_set: None,
-                lang_dfa: None,
-            }
-        }
-    }
-
-    /// Construct an `NfaM` for the end/start state equality predicate.
-    pub fn end_start_eq(is_neg: bool, i: usize, j: usize) -> NfaM<'a> {
-        if is_neg {
-            NfaM {
-                init: INIT,
-                fin: BTreeSet::from([FIN]),
-                pred: Predicate::NotEndStartEq,
-                i: j,
-                j: i,
-                condition_set: None,
-                lang_dfa: None,
-            }
-        } else {
-            NfaM {
-                init: INIT,
-                fin: BTreeSet::from([FIN]),
-                pred: Predicate::EndStartEq,
-                i: j,
-                j: i,
-                condition_set: None,
-                lang_dfa: None,
-            }
-        }
-    }
-
-    fn prefix_trans(&self, _: State, letter: &PathTuple) -> Cow<'static, [State]> {
+    fn prefix_trans(
+        _: State,
+        letter: &PathTuple,
+        PathId(i): PathId,
+        PathId(j): PathId,
+    ) -> Cow<'static, [State]> {
         let PathTuple(l) = letter;
 
-        if let PathSymbol::Letter(_) = l[self.i] {
-            if l[self.i] == l[self.j] {
+        if let PathSymbol::Letter(_) = l[i] {
+            if l[i] == l[j] {
                 return Cow::Borrowed(&[INIT]);
             }
         } else {
@@ -355,25 +97,35 @@ impl<'a> NfaM<'a> {
         Cow::Borrowed(&[])
     }
 
-    fn not_prefix_trans(&self, state: State, letter: &PathTuple) -> Cow<'static, [State]> {
+    fn not_prefix_trans(
+        state: State,
+        letter: &PathTuple,
+        PathId(i): PathId,
+        PathId(j): PathId,
+    ) -> Cow<'static, [State]> {
         let PathTuple(l) = letter;
 
         if state == FIN {
             return Cow::Borrowed(&[FIN]);
         }
 
-        if let PathSymbol::Letter(_) = l[self.i]
-            && l[self.i] != l[self.j]
+        if let PathSymbol::Letter(_) = l[i]
+            && l[i] != l[j]
         {
             return Cow::Borrowed(&[FIN]);
         }
         Cow::Borrowed(&[INIT])
     }
 
-    fn input_eq_trans(&self, _: State, letter: &PathTuple) -> Cow<'static, [State]> {
+    fn input_eq_trans(
+        _: State,
+        letter: &PathTuple,
+        PathId(i): PathId,
+        PathId(j): PathId,
+    ) -> Cow<'static, [State]> {
         let PathTuple(l) = letter;
 
-        match (l[self.i], l[self.j]) {
+        match (l[i], l[j]) {
             (PathSymbol::Letter(l1), PathSymbol::Letter(l2)) => {
                 if l1 == l2 {
                     return Cow::Borrowed(&[INIT]);
@@ -385,14 +137,19 @@ impl<'a> NfaM<'a> {
         }
     }
 
-    fn not_input_eq_trans(&self, state: State, letter: &PathTuple) -> Cow<'static, [State]> {
+    fn not_input_eq_trans(
+        state: State,
+        letter: &PathTuple,
+        PathId(i): PathId,
+        PathId(j): PathId,
+    ) -> Cow<'static, [State]> {
         let PathTuple(l) = letter;
 
         if state == FIN {
             return Cow::Borrowed(&[FIN]);
         }
 
-        match (l[self.i], l[self.j]) {
+        match (l[i], l[j]) {
             (PathSymbol::Letter(l1), PathSymbol::Letter(l2)) => {
                 if l1 != l2 {
                     return Cow::Borrowed(&[FIN]);
@@ -404,30 +161,39 @@ impl<'a> NfaM<'a> {
         }
     }
 
-    fn lang_belong_trans(&self, state: State, letter: &PathTuple) -> Cow<'static, [State]> {
+    fn input_lang_belong_trans(
+        state: State,
+        letter: &PathTuple,
+        PathId(i): PathId,
+        lang: &LangDfa,
+    ) -> Cow<'static, [State]> {
         let PathTuple(l) = letter;
-        let lang_dfa = self.lang_dfa.as_ref().unwrap();
 
-        match l[self.i] {
+        match l[i] {
             PathSymbol::Letter(x) => {
                 let trans_on = TransOn { state, letter: x };
-                let to_state = lang_dfa.trans.get(&trans_on);
+                let to_state = lang.trans.get(&trans_on);
 
                 let Some(&to_state) = to_state else {
                     return Cow::Borrowed(&[]);
                 };
 
-                Cow::Owned(Vec::from([to_state]))
+                Cow::Owned(vec![to_state])
             }
-            _ => Cow::Owned(Vec::from([state])),
+            _ => Cow::Owned(vec![state]),
         }
     }
 
-    fn length_trans(&self, _: State, letter: &PathTuple) -> Cow<'static, [State]> {
+    fn length_trans(
+        _: State,
+        letter: &PathTuple,
+        PathId(i): PathId,
+        PathId(j): PathId,
+    ) -> Cow<'static, [State]> {
         let PathTuple(l) = letter;
 
-        if l[self.j] == PathSymbol::Bottom {
-            if l[self.i] == PathSymbol::Bottom {
+        if l[j] == PathSymbol::Bottom {
+            if l[i] == PathSymbol::Bottom {
                 return Cow::Borrowed(&[INIT]);
             }
         } else {
@@ -436,123 +202,118 @@ impl<'a> NfaM<'a> {
         Cow::Borrowed(&[])
     }
 
-    fn not_length_trans(&self, state: State, letter: &PathTuple) -> Cow<'static, [State]> {
+    fn not_length_trans(
+        state: State,
+        letter: &PathTuple,
+        PathId(i): PathId,
+        PathId(j): PathId,
+    ) -> Cow<'static, [State]> {
         let PathTuple(l) = letter;
 
         if state == FIN {
             return Cow::Borrowed(&[FIN]);
         }
 
-        if l[self.j] == PathSymbol::Bottom && l[self.i] != PathSymbol::Bottom {
+        if l[j] == PathSymbol::Bottom && l[i] != PathSymbol::Bottom {
             return Cow::Borrowed(&[FIN]);
         }
         Cow::Borrowed(&[INIT])
     }
 
-    fn path_eq_trans(&self, _: State, letter: &PathTuple) -> Cow<'static, [State]> {
+    fn path_eq_trans(
+        _: State,
+        letter: &PathTuple,
+        PathId(i): PathId,
+        PathId(j): PathId,
+    ) -> Cow<'static, [State]> {
         let PathTuple(l) = letter;
 
-        if l[self.i] == l[self.j] {
+        if l[i] == l[j] {
             return Cow::Borrowed(&[INIT]);
         }
         Cow::Borrowed(&[])
     }
 
-    fn not_path_eq_trans(&self, state: State, letter: &PathTuple) -> Cow<'static, [State]> {
+    fn not_path_eq_trans(
+        state: State,
+        letter: &PathTuple,
+        PathId(i): PathId,
+        PathId(j): PathId,
+    ) -> Cow<'static, [State]> {
         let PathTuple(l) = letter;
 
         if state == FIN {
             return Cow::Borrowed(&[FIN]);
         }
 
-        if l[self.i] == l[self.j] {
+        if l[i] == l[j] {
             return Cow::Borrowed(&[INIT]);
         }
         Cow::Borrowed(&[FIN])
     }
 
-    fn start_belongs_to_trans(&self, state: State, letter: &PathTuple) -> Cow<'static, [State]> {
-        let PathTuple(l) = letter;
-        let Some(condition_set) = self.condition_set else {
-            return Cow::Borrowed(&[]);
-        };
-
-        if state == FIN {
-            return Cow::Borrowed(&[FIN]);
-        }
-
-        if let PathSymbol::State(x) = l[self.i]
-            && condition_set.contains(&x)
-        {
-            return Cow::Borrowed(&[FIN]);
-        }
-
-        Cow::Borrowed(&[])
-    }
-
-    fn not_start_belongs_to_trans(
-        &self,
+    fn end_belongs_to_trans(
         state: State,
         letter: &PathTuple,
+        PathId(i): PathId,
+        set: &BTreeSet<State>,
     ) -> Cow<'static, [State]> {
         let PathTuple(l) = letter;
-        let Some(condition_set) = self.condition_set else {
-            return Cow::Borrowed(&[]);
-        };
 
-        if state == FIN {
-            return Cow::Borrowed(&[FIN]);
-        }
-
-        if let PathSymbol::State(x) = l[self.i]
-            && !condition_set.contains(&x)
-        {
-            return Cow::Borrowed(&[FIN]);
-        }
-        Cow::Borrowed(&[])
-    }
-
-    fn end_belongs_to_trans(&self, state: State, letter: &PathTuple) -> Cow<'static, [State]> {
-        let PathTuple(l) = letter;
-        let Some(condition_set) = self.condition_set else {
-            return Cow::Borrowed(&[]);
-        };
-
-        match (state, l[self.i]) {
-            (INIT, PathSymbol::State(x)) if condition_set.contains(&x) => {
-                Cow::Borrowed(&[INIT, FIN])
-            }
+        match (state, l[i]) {
+            (INIT, PathSymbol::State(x)) if set.contains(&x) => Cow::Borrowed(&[INIT, FIN]),
             (INIT, _) => Cow::Borrowed(&[INIT]),
             (FIN, PathSymbol::Bottom) => Cow::Borrowed(&[FIN]),
             _ => Cow::Borrowed(&[]),
         }
     }
 
-    fn not_end_belongs_to_trans(&self, state: State, letter: &PathTuple) -> Cow<'static, [State]> {
+    fn not_end_belongs_to_trans(
+        state: State,
+        letter: &PathTuple,
+        PathId(i): PathId,
+        set: &BTreeSet<State>,
+    ) -> Cow<'static, [State]> {
         let PathTuple(l) = letter;
-        let Some(condition_set) = self.condition_set else {
-            return Cow::Borrowed(&[]);
-        };
 
-        match (state, l[self.i]) {
-            (INIT, PathSymbol::State(x)) if !condition_set.contains(&x) => {
-                Cow::Borrowed(&[INIT, FIN])
-            }
+        match (state, l[i]) {
+            (INIT, PathSymbol::State(x)) if !set.contains(&x) => Cow::Borrowed(&[INIT, FIN]),
             (INIT, _) => Cow::Borrowed(&[INIT]),
             (FIN, PathSymbol::Bottom) => Cow::Borrowed(&[FIN]),
             _ => Cow::Borrowed(&[]),
         }
     }
 
-    fn init_init_eq_trans(&self, state: State, letter: &PathTuple) -> Cow<'static, [State]> {
+    fn end_equal_to_trans(
+        state: State,
+        letter: &PathTuple,
+        PathId(i): PathId,
+        target_state: State,
+    ) -> Cow<'static, [State]> {
+        let PathTuple(l) = letter;
+
+        match (state, l[i]) {
+            (INIT, PathSymbol::State(x)) if x == target_state => Cow::Borrowed(&[INIT, FIN]),
+            (INIT, _) => Cow::Borrowed(&[INIT]),
+            (FIN, PathSymbol::Bottom) => Cow::Borrowed(&[FIN]),
+            _ => Cow::Borrowed(&[]),
+        }
+    }
+
+    fn init_init_eq_trans(
+        state: State,
+        letter: &PathTuple,
+        PathId(i): PathId,
+        PathId(j): PathId,
+    ) -> Cow<'static, [State]> {
         let PathTuple(l) = letter;
 
         if state == FIN {
             return Cow::Borrowed(&[FIN]);
         }
 
-        if let PathSymbol::State(x) = l[self.i]
-            && let PathSymbol::State(y) = l[self.j]
+        if let PathSymbol::State(x) = l[i]
+            && let PathSymbol::State(y) = l[j]
             && x == y
         {
             return Cow::Borrowed(&[FIN]);
@@ -561,15 +322,20 @@ impl<'a> NfaM<'a> {
         Cow::Borrowed(&[])
     }
 
-    fn not_init_init_eq_trans(&self, state: State, letter: &PathTuple) -> Cow<'static, [State]> {
+    fn not_init_init_eq_trans(
+        state: State,
+        letter: &PathTuple,
+        PathId(i): PathId,
+        PathId(j): PathId,
+    ) -> Cow<'static, [State]> {
         let PathTuple(l) = letter;
 
         if state == FIN {
             return Cow::Borrowed(&[FIN]);
         }
 
-        if let PathSymbol::State(x) = l[self.i]
-            && let PathSymbol::State(y) = l[self.j]
+        if let PathSymbol::State(x) = l[i]
+            && let PathSymbol::State(y) = l[j]
             && x != y
         {
             return Cow::Borrowed(&[FIN]);
@@ -578,23 +344,28 @@ impl<'a> NfaM<'a> {
         Cow::Borrowed(&[])
     }
 
-    fn final_final_eq_trans(&self, state: State, letter: &PathTuple) -> Cow<'static, [State]> {
+    fn final_final_eq_trans(
+        state: State,
+        letter: &PathTuple,
+        PathId(i): PathId,
+        PathId(j): PathId,
+    ) -> Cow<'static, [State]> {
         let PathTuple(l) = letter;
 
         match state {
             state if state == INIT => {
-                let mut to = Vec::from([INIT]);
+                let mut to = vec![INIT];
 
-                if let PathSymbol::State(State(x)) = l[self.i] {
+                if let PathSymbol::State(State(x)) = l[i] {
                     let state_id = x * 2;
                     to.push(State(state_id));
                 }
-                if let PathSymbol::State(State(x)) = l[self.j] {
+                if let PathSymbol::State(State(x)) = l[j] {
                     let state_id = (x * 2) + 1;
                     to.push(State(state_id));
                 }
-                if let PathSymbol::State(x) = l[self.i]
-                    && let PathSymbol::State(y) = l[self.j]
+                if let PathSymbol::State(x) = l[i]
+                    && let PathSymbol::State(y) = l[j]
                     && x == y
                 {
                     to.push(FIN);
@@ -603,18 +374,18 @@ impl<'a> NfaM<'a> {
                 Cow::Owned(to)
             }
             state if state == FIN => {
-                if l[self.i] == PathSymbol::Bottom && l[self.j] == PathSymbol::Bottom {
+                if l[i] == PathSymbol::Bottom && l[j] == PathSymbol::Bottom {
                     return Cow::Borrowed(&[FIN]);
                 }
                 Cow::Borrowed(&[])
             }
             State(state) if state % 2 == 0 => {
                 let mut to = Vec::new();
-                if l[self.i] == PathSymbol::Bottom {
+                if l[i] == PathSymbol::Bottom {
                     let target = State(state / 2);
 
                     to.push(State(state));
-                    if let PathSymbol::State(y) = l[self.j]
+                    if let PathSymbol::State(y) = l[j]
                         && target == y
                     {
                         to.push(FIN);
@@ -625,11 +396,11 @@ impl<'a> NfaM<'a> {
             }
             State(state) if state % 2 == 1 => {
                 let mut to = Vec::new();
-                if l[self.j] == PathSymbol::Bottom {
+                if l[j] == PathSymbol::Bottom {
                     let target = State((state - 1) / 2);
 
                     to.push(State(state));
-                    if let PathSymbol::State(y) = l[self.i]
+                    if let PathSymbol::State(y) = l[i]
                         && target == y
                     {
                         to.push(FIN);
@@ -642,23 +413,28 @@ impl<'a> NfaM<'a> {
         }
     }
 
-    fn not_final_final_eq_trans(&self, state: State, letter: &PathTuple) -> Cow<'static, [State]> {
+    fn not_final_final_eq_trans(
+        state: State,
+        letter: &PathTuple,
+        PathId(i): PathId,
+        PathId(j): PathId,
+    ) -> Cow<'static, [State]> {
         let PathTuple(l) = letter;
 
         match state {
             state if state == INIT => {
-                let mut to = Vec::from([INIT]);
+                let mut to = vec![INIT];
 
-                if let PathSymbol::State(State(x)) = l[self.i] {
+                if let PathSymbol::State(State(x)) = l[i] {
                     let state_id = x * 2;
                     to.push(State(state_id));
                 }
-                if let PathSymbol::State(State(x)) = l[self.j] {
+                if let PathSymbol::State(State(x)) = l[j] {
                     let state_id = (x * 2) + 1;
                     to.push(State(state_id));
                 }
-                if let PathSymbol::State(x) = l[self.i]
-                    && let PathSymbol::State(y) = l[self.j]
+                if let PathSymbol::State(x) = l[i]
+                    && let PathSymbol::State(y) = l[j]
                     && x != y
                 {
                     to.push(FIN);
@@ -667,18 +443,18 @@ impl<'a> NfaM<'a> {
                 Cow::Owned(to)
             }
             state if state == FIN => {
-                if l[self.i] == PathSymbol::Bottom && l[self.j] == PathSymbol::Bottom {
+                if l[i] == PathSymbol::Bottom && l[j] == PathSymbol::Bottom {
                     return Cow::Borrowed(&[FIN]);
                 }
                 Cow::Borrowed(&[])
             }
             State(state) if state % 2 == 0 => {
                 let mut to = Vec::new();
-                if l[self.i] == PathSymbol::Bottom {
+                if l[i] == PathSymbol::Bottom {
                     let target = State(state / 2);
 
                     to.push(State(state));
-                    if let PathSymbol::State(y) = l[self.j]
+                    if let PathSymbol::State(y) = l[j]
                         && target != y
                     {
                         to.push(FIN);
@@ -689,11 +465,11 @@ impl<'a> NfaM<'a> {
             }
             State(state) if state % 2 == 1 => {
                 let mut to = Vec::new();
-                if l[self.j] == PathSymbol::Bottom {
+                if l[j] == PathSymbol::Bottom {
                     let target = State((state - 1) / 2);
 
                     to.push(State(state));
-                    if let PathSymbol::State(y) = l[self.i]
+                    if let PathSymbol::State(y) = l[i]
                         && target != y
                     {
                         to.push(FIN);
@@ -706,17 +482,22 @@ impl<'a> NfaM<'a> {
         }
     }
 
-    fn init_final_eq_trans(&self, state: State, letter: &PathTuple) -> Cow<'static, [State]> {
+    fn init_final_eq_trans(
+        state: State,
+        letter: &PathTuple,
+        PathId(i): PathId,
+        PathId(j): PathId,
+    ) -> Cow<'static, [State]> {
         let PathTuple(l) = letter;
 
         match state {
             state if state == INIT => {
                 let mut to = Vec::new();
-                if let PathSymbol::State(x) = l[self.i] {
+                if let PathSymbol::State(x) = l[i] {
                     to.push(x);
                 }
-                if let PathSymbol::State(x) = l[self.i]
-                    && let PathSymbol::State(y) = l[self.j]
+                if let PathSymbol::State(x) = l[i]
+                    && let PathSymbol::State(y) = l[j]
                     && x == y
                 {
                     to.push(FIN);
@@ -724,14 +505,14 @@ impl<'a> NfaM<'a> {
                 Cow::Owned(to)
             }
             state if state == FIN => {
-                if l[self.j] == PathSymbol::Bottom {
+                if l[j] == PathSymbol::Bottom {
                     return Cow::Borrowed(&[FIN]);
                 }
                 Cow::Borrowed(&[])
             }
             state => {
-                let mut to = Vec::from([state]);
-                if let PathSymbol::State(y) = l[self.j]
+                let mut to = vec![state];
+                if let PathSymbol::State(y) = l[j]
                     && state == y
                 {
                     to.push(FIN);
@@ -741,17 +522,22 @@ impl<'a> NfaM<'a> {
         }
     }
 
-    fn not_init_final_eq_trans(&self, state: State, letter: &PathTuple) -> Cow<'static, [State]> {
+    fn not_init_final_eq_trans(
+        state: State,
+        letter: &PathTuple,
+        PathId(i): PathId,
+        PathId(j): PathId,
+    ) -> Cow<'static, [State]> {
         let PathTuple(l) = letter;
 
         match state {
             state if state == INIT => {
                 let mut to = Vec::new();
-                if let PathSymbol::State(x) = l[self.i] {
+                if let PathSymbol::State(x) = l[i] {
                     to.push(x);
                 }
-                if let PathSymbol::State(x) = l[self.i]
-                    && let PathSymbol::State(y) = l[self.j]
+                if let PathSymbol::State(x) = l[i]
+                    && let PathSymbol::State(y) = l[j]
                     && x != y
                 {
                     to.push(FIN);
@@ -759,14 +545,14 @@ impl<'a> NfaM<'a> {
                 Cow::Owned(to)
             }
             state if state == FIN => {
-                if l[self.j] == PathSymbol::Bottom {
+                if l[j] == PathSymbol::Bottom {
                     return Cow::Borrowed(&[FIN]);
                 }
                 Cow::Borrowed(&[])
             }
             state => {
-                let mut to = Vec::from([state]);
-                if let PathSymbol::State(y) = l[self.j]
+                let mut to = vec![state];
+                if let PathSymbol::State(y) = l[j]
                     && state != y
                 {
                     to.push(FIN);
@@ -776,50 +562,260 @@ impl<'a> NfaM<'a> {
         }
     }
 
-    fn final_init_eq_trans(&self, state: State, letter: &PathTuple) -> Cow<'static, [State]> {
-        self.init_final_eq_trans(state, letter)
+    fn final_init_eq_trans(
+        state: State,
+        letter: &PathTuple,
+        i: PathId,
+        j: PathId,
+    ) -> Cow<'static, [State]> {
+        Self::init_final_eq_trans(state, letter, j, i) // swap
     }
 
-    fn not_final_init_eq_trans(&self, state: State, letter: &PathTuple) -> Cow<'static, [State]> {
-        self.not_init_final_eq_trans(state, letter)
+    fn not_final_init_eq_trans(
+        state: State,
+        letter: &PathTuple,
+        i: PathId,
+        j: PathId,
+    ) -> Cow<'static, [State]> {
+        Self::not_init_final_eq_trans(state, letter, j, i) // swap
+    }
+}
+
+impl<'a> NfaM<'a> {
+    fn trans(&self, state: State, letter: &PathTuple) -> Cow<'static, [State]> {
+        self.pred.trans(state, letter)
+    }
+
+    /// Construct an `NfaM` for the prefix predicate.
+    fn prefix(is_neg: bool, i: PathId, j: PathId) -> NfaM<'a> {
+        if is_neg {
+            NfaM {
+                init: INIT,
+                fin: BTreeSet::from([FIN]),
+                pred: Predicate::NotInputPrefix { i, j },
+            }
+        } else {
+            NfaM {
+                init: INIT,
+                fin: BTreeSet::from([INIT]),
+                pred: Predicate::InputPrefix { i, j },
+            }
+        }
+    }
+
+    /// Construct an `NfaM` for the input equality.
+    pub fn input_eq(is_neg: bool, i: PathId, j: PathId) -> NfaM<'a> {
+        if is_neg {
+            NfaM {
+                init: INIT,
+                fin: BTreeSet::from([FIN]),
+                pred: Predicate::NotInputEq { i, j },
+            }
+        } else {
+            NfaM {
+                init: INIT,
+                fin: BTreeSet::from([INIT]),
+                pred: Predicate::InputEq { i, j },
+            }
+        }
+    }
+
+    /// Construct an `NfaM` for the input language inclusion predicate.
+    fn input_lang_belong(i: PathId, lang: LangDfa) -> NfaM<'a> {
+        NfaM {
+            init: lang.init,
+            fin: lang.fin.clone(),
+            pred: Predicate::InputLangBelong { i, lang },
+        }
+    }
+
+    /// Construct an `NfaM` for the length comparison predicate.
+    fn length(is_neg: bool, i: PathId, j: PathId) -> NfaM<'a> {
+        if is_neg {
+            NfaM {
+                init: INIT,
+                fin: BTreeSet::from([FIN]),
+                pred: Predicate::NotInputLength { i, j },
+            }
+        } else {
+            NfaM {
+                init: INIT,
+                fin: BTreeSet::from([INIT]),
+                pred: Predicate::InputLength { i, j },
+            }
+        }
+    }
+
+    /// Construct an `NfaM` for the path equality predicate.
+    fn path_eq(is_neg: bool, i: PathId, j: PathId) -> NfaM<'a> {
+        if is_neg {
+            NfaM {
+                init: INIT,
+                fin: BTreeSet::from([FIN]),
+                pred: Predicate::NotPathEq { i, j },
+            }
+        } else {
+            NfaM {
+                init: INIT,
+                fin: BTreeSet::from([INIT]),
+                pred: Predicate::PathEq { i, j },
+            }
+        }
+    }
+
+    /// Construct an `NfaM` for the "end state belongs to" predicate.
+    fn end_belongs_to(is_neg: bool, i: PathId, set: &BTreeSet<State>) -> NfaM<'_> {
+        if is_neg {
+            NfaM {
+                init: INIT,
+                fin: BTreeSet::from([FIN]),
+                pred: Predicate::NotEndBelongsTo { i, set },
+            }
+        } else {
+            NfaM {
+                init: INIT,
+                fin: BTreeSet::from([FIN]),
+                pred: Predicate::EndBelongsTo { i, set },
+            }
+        }
+    }
+
+    /// Construct an `NfaM` for the "end state is equal to" predicate.
+    pub fn end_equal_to(i: PathId, state: State) -> NfaM<'a> {
+        NfaM {
+            init: INIT,
+            fin: BTreeSet::from([FIN]),
+            pred: Predicate::EndEqualTo { i, s: state },
+        }
+    }
+
+    /// Construct an `NfaM` for the start state equality predicate.
+    pub fn start_start_eq(is_neg: bool, i: PathId, j: PathId) -> NfaM<'a> {
+        if is_neg {
+            NfaM {
+                init: INIT,
+                fin: BTreeSet::from([FIN]),
+                pred: Predicate::NotStartStartEq { i, j },
+            }
+        } else {
+            NfaM {
+                init: INIT,
+                fin: BTreeSet::from([FIN]),
+                pred: Predicate::StartStartEq { i, j },
+            }
+        }
+    }
+
+    /// Construct an `NfaM` for the end state equality predicate.
+    pub fn end_end_eq(is_neg: bool, i: PathId, j: PathId) -> NfaM<'a> {
+        if is_neg {
+            NfaM {
+                init: INIT,
+                fin: BTreeSet::from([FIN]),
+                pred: Predicate::NotEndEndEq { i, j },
+            }
+        } else {
+            NfaM {
+                init: INIT,
+                fin: BTreeSet::from([FIN]),
+                pred: Predicate::EndEndEq { i, j },
+            }
+        }
+    }
+
+    /// Construct an `NfaM` for the start/end state equality predicate.
+    pub fn start_end_eq(is_neg: bool, i: PathId, j: PathId) -> NfaM<'a> {
+        if is_neg {
+            NfaM {
+                init: INIT,
+                fin: BTreeSet::from([FIN]),
+                pred: Predicate::NotStartEndEq { i, j },
+            }
+        } else {
+            NfaM {
+                init: INIT,
+                fin: BTreeSet::from([FIN]),
+                pred: Predicate::StartEndEq { i, j },
+            }
+        }
+    }
+
+    /// Construct an `NfaM` for the end/start state equality predicate.
+    pub fn end_start_eq(is_neg: bool, i: PathId, j: PathId) -> NfaM<'a> {
+        if is_neg {
+            NfaM {
+                init: INIT,
+                fin: BTreeSet::from([FIN]),
+                pred: Predicate::NotEndStartEq { i, j },
+            }
+        } else {
+            NfaM {
+                init: INIT,
+                fin: BTreeSet::from([FIN]),
+                pred: Predicate::EndStartEq { i, j },
+            }
+        }
     }
 }
 
 /// `MAutomata` is a container for multiple `NfaM`.
+#[derive(Clone, Default)]
 pub struct MAutomata<'a> {
     ms: Vec<NfaM<'a>>,
 }
 
+/// `MAutomataState` is the state representation of `MAutomata`.
+#[derive(Eq, Hash, PartialEq, Clone, Debug)]
+pub struct MAutomataState(Vec<BTreeSet<State>>);
+
+impl MAutomataState {
+    pub fn is_dead(&self) -> bool {
+        self.0.iter().any(|x| x.is_empty()) && !self.0.is_empty()
+    }
+}
+
 impl<'a> MAutomata<'a> {
+    pub fn new() -> Self {
+        MAutomata::default()
+    }
+
     /// Get the initial states for these `MAutomata`.
-    pub fn inits(&self) -> Vec<BTreeSet<State>> {
+    pub fn inits(&self) -> MAutomataState {
         let inits_ms: Vec<State> = self.ms.iter().map(|x| x.init).collect();
 
-        inits_ms.iter().map(|&x| BTreeSet::from([x])).collect()
+        MAutomataState(inits_ms.iter().map(|&x| BTreeSet::from([x])).collect())
     }
 
     /// Run these `MAutomata` on the `state` and `letter`, returning the new states.
-    pub fn trans(&self, state: &[BTreeSet<State>], letter: &PathTuple) -> Vec<BTreeSet<State>> {
+    pub fn trans(
+        &self,
+        MAutomataState(state): &MAutomataState,
+        letter: &PathTuple,
+    ) -> MAutomataState {
         let mut states = Vec::new();
 
-        for (i, state) in state.iter().enumerate() {
+        for (state, automaton) in state.iter().zip(&self.ms) {
             let mut to: BTreeSet<State> = BTreeSet::new();
 
             for &s in state {
-                let x = self.ms.get(i).unwrap().trans(s, letter);
+                let x = automaton.trans(s, letter);
                 to.extend(x.iter());
             }
             states.push(to);
         }
 
-        states
+        MAutomataState(states)
     }
 
     /// Check whether these `MAutomata` are in final state.
-    pub fn is_final(&self, state: &[BTreeSet<State>]) -> bool {
+    pub fn is_final(&self, MAutomataState(state): &MAutomataState) -> bool {
         let fins = self.ms.iter().map(|m| &m.fin);
 
         state.iter().zip(fins).all(|(s, f)| !s.is_disjoint(f))
+    }
+
+    pub fn push(&mut self, m: NfaM<'a>) {
+        self.ms.push(m);
     }
 
     /// Extend these `MAutomata` with other ones.
@@ -834,19 +830,224 @@ impl<'a> From<Vec<NfaM<'a>>> for MAutomata<'a> {
     }
 }
 
+#[derive(Clone)]
+struct NfaMTuple {
+    init: TupleState,
+    fin: BTreeSet<TupleState>,
+}
+
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct TupleState(Vec<State>);
+
+impl TupleState {
+    fn is_dead(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl NfaMTuple {
+    fn new(lang: &LangDfa, config_state: Vec<State>) -> Self {
+        let mut init = config_state.clone();
+        init.insert(0, lang.init);
+        let mut fin = BTreeSet::new();
+
+        for &f in &lang.fin {
+            let mut f_vec = config_state.clone();
+            f_vec.push(f);
+            fin.insert(TupleState(f_vec));
+        }
+
+        NfaMTuple {
+            init: TupleState(init),
+            fin,
+        }
+    }
+
+    fn trans(
+        &self,
+        term: &[PathId],
+        lang: &LangDfa,
+        state: &TupleState,
+        letter: &PathTuple,
+    ) -> TupleState {
+        let TupleState(s) = state;
+        let PathTuple(l) = letter;
+
+        let mut new_state = vec![TRAP; term.len()];
+
+        for (i, &PathId(dim)) in term.iter().enumerate() {
+            match l[dim] {
+                PathSymbol::OutWord(v) => {
+                    let mut state = s[i];
+
+                    for &OutputLetter(c) in v {
+                        let trans_on = TransOn {
+                            state,
+                            letter: Letter(c),
+                        };
+
+                        let Some(&s) = lang.trans.get(&trans_on) else {
+                            state = TRAP;
+                            break;
+                        };
+                        state = s;
+                    }
+
+                    new_state[i] = state;
+                }
+                _ => new_state[i] = s[i],
+            }
+        }
+
+        TupleState(new_state)
+    }
+}
+
+#[derive(Clone, Default)]
+struct MTupleUnion {
+    m_tuples: Vec<NfaMTuple>,
+    term: Vec<PathId>,
+    lang: LangDfa,
+}
+
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct MTupleUnionState(Vec<TupleState>);
+
+impl MTupleUnionState {
+    fn is_dead(&self) -> bool {
+        self.0.iter().all(|s| s.is_dead())
+    }
+}
+
+impl MTupleUnion {
+    fn new(term: Vec<PathId>, lang: LangDfa, config_states: Vec<Vec<State>>) -> Self {
+        let mut m_tuples = Vec::new();
+
+        if config_states.is_empty() {
+            let m_tuple = NfaMTuple::new(&lang, vec![]);
+            return MTupleUnion {
+                m_tuples: vec![m_tuple],
+                term,
+                lang,
+            };
+        }
+
+        for config_state in config_states {
+            m_tuples.push(NfaMTuple::new(&lang, config_state));
+        }
+
+        MTupleUnion {
+            m_tuples,
+            term,
+            lang,
+        }
+    }
+
+    fn trans(&self, states: &MTupleUnionState, letter: &PathTuple) -> MTupleUnionState {
+        let MTupleUnionState(states) = states;
+        let mut new_states = Vec::new();
+
+        for (m_tuple, state) in self.m_tuples.iter().zip(states) {
+            new_states.push(m_tuple.trans(&self.term, &self.lang, state, letter));
+        }
+
+        MTupleUnionState(new_states)
+    }
+}
+
+/// `MTupleAutomata` is a container for multiple `NfaMTuple`.
+#[derive(Clone, Default)]
+pub struct MTupleUnionAutomata {
+    m_union_tuples: Vec<MTupleUnion>,
+}
+
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct MTupleUnionAutomataState(Vec<MTupleUnionState>);
+
+impl MTupleUnionAutomataState {
+    pub fn is_dead(&self) -> bool {
+        self.0.iter().any(|s| s.is_dead())
+    }
+}
+
+impl MTupleUnionAutomata {
+    pub fn new() -> Self {
+        MTupleUnionAutomata::default()
+    }
+
+    /// Get the initial states for these `MTupleUnionAutomata`.
+    pub fn inits(&self) -> MTupleUnionAutomataState {
+        let mut inits = Vec::new();
+
+        for m_union_tuple in &self.m_union_tuples {
+            let x: Vec<_> = m_union_tuple
+                .m_tuples
+                .iter()
+                .map(|m_tuple| m_tuple.init.clone())
+                .collect();
+
+            inits.push(MTupleUnionState(x));
+        }
+
+        MTupleUnionAutomataState(inits)
+    }
+
+    /// Run these `MTupleUnionAutomata` on the `state` and `letter`, returning the states.
+    pub fn trans(
+        &self,
+        MTupleUnionAutomataState(state): &MTupleUnionAutomataState,
+        letter: &PathTuple,
+    ) -> MTupleUnionAutomataState {
+        let mut states = Vec::new();
+
+        for (state, automaton) in state.iter().zip(&self.m_union_tuples) {
+            let to = automaton.trans(state, letter);
+            states.push(to);
+        }
+
+        MTupleUnionAutomataState(states)
+    }
+
+    /// Check whether these `MTupleAutomata` are in a final state.
+    pub fn is_final(&self, MTupleUnionAutomataState(state): &MTupleUnionAutomataState) -> bool {
+        for (m_tuple_union, tuple_union_state) in self.m_union_tuples.iter().zip(state) {
+            let MTupleUnionState(tuple_union_state) = tuple_union_state;
+            let mut any_fin = false;
+
+            for (m_tuple, tuple_state) in m_tuple_union.m_tuples.iter().zip(tuple_union_state) {
+                any_fin |= m_tuple.fin.contains(tuple_state);
+            }
+
+            if !any_fin {
+                return false;
+            }
+        }
+
+        true
+    }
+}
+
+impl From<Vec<MTupleUnion>> for MTupleUnionAutomata {
+    fn from(value: Vec<MTupleUnion>) -> Self {
+        MTupleUnionAutomata {
+            m_union_tuples: value,
+        }
+    }
+}
+
 /// `NpaM` represents the Parikh automaton encoding a single PL_SUM literal.
-pub struct NpaM {
-    pub init: State,
+struct NpaM {
+    init: State,
     pred: CountPredicate,
-    i: usize,
-    j: usize,
+    i: Vec<PathId>,
+    j: Vec<PathId>,
 }
 
 /// A state of a single `NpaM`.
 #[derive(Eq, Hash, PartialEq, Ord, PartialOrd, Copy, Clone, Debug)]
 pub struct ParikhState {
     pub state: State,
-    pub counter: (usize, usize),
+    counter: (i32, i32),
 }
 
 enum CountPredicate {
@@ -855,7 +1056,7 @@ enum CountPredicate {
 
 impl NpaM {
     /// Construct an `NpaM` for the "count is not equal to" predicate.
-    pub fn count_neq(i: usize, j: usize) -> NpaM {
+    fn count_neq(i: Vec<PathId>, j: Vec<PathId>) -> NpaM {
         NpaM {
             init: INIT,
             pred: CountPredicate::NotEq,
@@ -878,34 +1079,23 @@ impl NpaM {
 
     fn count_pa_trans(&self, state: ParikhState, letter: &PathTuple) -> Vec<ParikhState> {
         let PathTuple(l) = letter;
+        let mut counter = state.counter;
 
-        match (l[self.i], l[self.j]) {
-            (PathSymbol::OutNum(OutputNumber(n1)), PathSymbol::OutNum(OutputNumber(n2))) => {
-                let counter = (state.counter.0 + n1, state.counter.1 + n2);
-
-                Vec::from([ParikhState {
-                    state: INIT,
-                    counter,
-                }])
+        for &PathId(dim) in &self.i {
+            if let PathSymbol::OutNum(OutputNumber(n)) = l[dim] {
+                counter.0 += n;
             }
-            (_, PathSymbol::OutNum(OutputNumber(n))) => {
-                let counter = (state.counter.0, state.counter.1 + n);
-
-                Vec::from([ParikhState {
-                    state: INIT,
-                    counter,
-                }])
-            }
-            (PathSymbol::OutNum(OutputNumber(n)), _) => {
-                let counter = (state.counter.0 + n, state.counter.1);
-
-                Vec::from([ParikhState {
-                    state: INIT,
-                    counter,
-                }])
-            }
-            _ => Vec::from([state]),
         }
+        for &PathId(dim) in &self.j {
+            if let PathSymbol::OutNum(OutputNumber(n)) = l[dim] {
+                counter.1 += n;
+            }
+        }
+
+        vec![ParikhState {
+            state: INIT,
+            counter,
+        }]
     }
 
     fn count_not_eq_accepts(&self, state: ParikhState) -> bool {
@@ -914,86 +1104,145 @@ impl NpaM {
 }
 
 /// `ParikhAutomata` is a container for multiple `NpaM`.
+#[derive(Default)]
 pub struct ParikhAutomata {
     pas: Vec<NpaM>,
 }
 
+/// `ParikhAutomataState` is the state representation of `ParikhAutomata`.
+#[derive(Eq, Hash, PartialEq, Clone, Debug)]
+pub struct ParikhAutomataState(Vec<BTreeSet<ParikhState>>);
+
+impl ParikhAutomataState {
+    pub fn is_dead(&self) -> bool {
+        self.0.iter().any(|x| x.is_empty() && !self.0.is_empty())
+    }
+}
+
+/// `ParikhAutomataStateNoOutputs` is the state representation of `ParikhAutomata` without the counters.
+#[derive(Eq, Hash, PartialEq, Clone, Debug)]
+pub struct ParikhAutomataStateNoOutputs(Vec<BTreeSet<State>>);
+
+impl ParikhAutomataStateNoOutputs {
+    pub fn is_dead(&self) -> bool {
+        self.0.iter().any(|x| x.is_empty() && !self.0.is_empty())
+    }
+}
+
+impl From<ParikhAutomataState> for ParikhAutomataStateNoOutputs {
+    fn from(value: ParikhAutomataState) -> Self {
+        ParikhAutomataStateNoOutputs(
+            value
+                .0
+                .iter()
+                .map(|x| x.iter().map(|y| y.state).collect())
+                .collect(),
+        )
+    }
+}
+
 impl ParikhAutomata {
-    /// Create an empty instance of `ParikhAutomata`.
-    pub fn empty() -> Self {
-        ParikhAutomata { pas: Vec::new() }
+    pub fn new() -> Self {
+        ParikhAutomata::default()
     }
 
     /// Get the initial states for these `ParikhAutomata`.
-    pub fn inits(&self) -> Vec<BTreeSet<ParikhState>> {
+    pub fn inits(&self) -> ParikhAutomataState {
         let inits_pa: Vec<State> = self.pas.iter().map(|x| x.init).collect();
 
-        inits_pa
-            .iter()
-            .map(|&s| {
-                BTreeSet::from([ParikhState {
-                    state: s,
-                    counter: (0, 0),
-                }])
-            })
-            .collect()
+        ParikhAutomataState(
+            inits_pa
+                .iter()
+                .map(|&s| {
+                    BTreeSet::from([ParikhState {
+                        state: s,
+                        counter: (0, 0),
+                    }])
+                })
+                .collect(),
+        )
     }
 
     /// Run these `ParikhAutomata` on the `state` and `letter`, returning the new states.
     pub fn trans(
         &self,
-        state: &[BTreeSet<ParikhState>],
+        ParikhAutomataState(state): &ParikhAutomataState,
         letter: &PathTuple,
-    ) -> Vec<BTreeSet<ParikhState>> {
+    ) -> ParikhAutomataState {
         let mut states = Vec::new();
 
-        for (i, state) in state.iter().enumerate() {
+        for (state, automaton) in state.iter().zip(&self.pas) {
             let mut to: BTreeSet<ParikhState> = BTreeSet::new();
 
             for &s in state {
-                let x = self.pas.get(i).unwrap().trans(s, letter);
+                let x = automaton.trans(s, letter);
                 to.extend(x);
             }
             states.push(to);
         }
 
-        states
+        ParikhAutomataState(states)
     }
 
-    /// Check whether these `MAutomata` are in final state.
-    pub fn is_final(&self, state: &[BTreeSet<ParikhState>]) -> bool {
+    /// Check whether these `ParikhAutomata` are in an accepting configuration.
+    pub fn accepts(&self, ParikhAutomataState(state): &ParikhAutomataState) -> bool {
         self.pas
             .iter()
             .zip(state)
             .all(|(pa, states)| states.iter().any(|s| pa.accepts(*s)))
     }
 
-    /// Check whether there are no `ParikhAutomata`.
-    pub fn is_empty(&self) -> bool {
-        self.pas.is_empty()
+    /// Run these `ParikhAutomata` on the `state` and `letter`, returning the new states without the outputs.
+    pub fn trans_no_output(
+        &self,
+        ParikhAutomataStateNoOutputs(state): &ParikhAutomataStateNoOutputs,
+        letter: &PathTuple,
+    ) -> ParikhAutomataStateNoOutputs {
+        let mut states = Vec::new();
+
+        for (state, automaton) in state.iter().zip(&self.pas) {
+            let mut to: BTreeSet<State> = BTreeSet::new();
+
+            for &s in state {
+                let s = ParikhState {
+                    state: s,
+                    counter: (0, 0),
+                };
+
+                let x = automaton.trans(s, letter);
+                to.extend(x.iter().map(|s| s.state));
+            }
+            states.push(to);
+        }
+
+        ParikhAutomataStateNoOutputs(states)
     }
 
     /// Get the number of `ParikhAutomata`.
     pub fn len(&self) -> usize {
         self.pas.len()
     }
+
+    /// Check whether these `ParikhAutomata` are empty.
+    pub fn is_empty(&self) -> bool {
+        self.pas.is_empty()
+    }
 }
 
 /// Take a list of literals (a single conjunction of atoms or negated atoms)
 /// and return a list of NfaM and NpaM automata that correspond to these literals.
 pub fn literals_to_automata<'a>(
-    lits: Vec<Literal>,
-    declarations: &Declarations,
+    lits: &Vec<Literal>,
     target_nfa: &'a TargetNfa,
-    reach_init: &'a BTreeSet<State>,
-    reach_final: &'a BTreeSet<State>,
-    language_automata: &'a HashMap<String, LangDfa>,
-) -> (MAutomata<'a>, ParikhAutomata) {
+    reach_sets: &'a ReachSets,
+    language_automata: &'a HashMap<&str, LangDfa>,
+) -> Result<(MAutomata<'a>, ParikhAutomata, MTupleUnionAutomata), String> {
     let mut ms = Vec::new();
     let mut pas = Vec::new();
+    let mut m_tuples = Vec::new();
 
     for tok in lits {
-        let pred: Atom;
+        let pred;
         let is_neg: bool;
 
         match tok {
@@ -1007,125 +1256,104 @@ pub fn literals_to_automata<'a>(
             }
         }
 
-        // TODO: refactor
         match pred {
-            Atom::Prefix(var1, var2) => match (var1, var2) {
-                (Var::Input(var1), Var::Input(var2)) => {
-                    let pi1 = declarations.path_id_by_input_var(var1);
-                    let pi2 = declarations.path_id_by_input_var(var2);
-
-                    let m = NfaM::prefix(is_neg, pi1, pi2);
-                    ms.push(m);
-                }
-                _ => panic!("wrong variable type for prefix"),
-            },
-            Atom::LessOrEq(var1, var2) => match (var1, var2) {
-                (Var::Input(var1), Var::Input(var2)) => {
-                    let pi1 = declarations.path_id_by_input_var(var1);
-                    let pi2 = declarations.path_id_by_input_var(var2);
-
-                    let m = NfaM::length(is_neg, pi1, pi2);
-                    ms.push(m);
-                }
-                _ => panic!("wrong variable type for less-or-eq"),
-            },
-            Atom::Belongs(var, lang) => match var {
-                Var::Input(var) => {
-                    let pi = declarations.path_id_by_input_var(var);
-                    let dfa = language_automata
-                        .get(&lang)
-                        .unwrap_or_else(|| panic!("undeclared language {lang}"))
-                        .clone();
-
-                    let dfa = if is_neg { dfa.complement() } else { dfa };
-
-                    let m = NfaM::lang_belong(pi, dfa);
-                    ms.push(m);
-                }
-                _ => panic!("wrong variable type for langugage inclusion"),
-            },
-            Atom::Init(var) | Atom::Final(var) | Atom::ReachInit(var) | Atom::ReachFinal(var) => {
-                let m: NfaM;
-                let set = match pred {
-                    Atom::Init(_) => &target_nfa.init,
-                    Atom::Final(_) => &target_nfa.fin,
-                    Atom::ReachInit(_) => reach_init,
-                    Atom::ReachFinal(_) => reach_final,
-                    _ => {
-                        continue;
-                    }
-                };
-
-                if let Some(path) = declarations.path_id_by_start_state(var) {
-                    m = NfaM::start_belongs_to(is_neg, path, set);
-                } else if let Some(path) = declarations.path_id_by_end_state(var) {
-                    m = NfaM::end_belongs_to(is_neg, path, set);
-                } else {
-                    panic!("unknown state variable")
-                }
-
-                ms.push(m);
+            &Atom::StartInit(_)
+            | &Atom::StartFinal(_)
+            | &Atom::StartReachInit(_)
+            | &Atom::StartReachFinal(_) => {
+                // Handled by restricting PathsN initial state.
+                continue;
             }
-            Atom::Eq(var1, var2) => match (var1, var2) {
-                (Var::Path(var1), Var::Path(var2)) => {
-                    let m = NfaM::path_eq(is_neg, var1, var2);
-                    ms.push(m);
+            &Atom::EndInit(path_id) => {
+                ms.push(NfaM::end_belongs_to(is_neg, path_id, &target_nfa.init))
+            }
+            &Atom::EndFinal(path_id) => {
+                ms.push(NfaM::end_belongs_to(is_neg, path_id, &target_nfa.fin))
+            }
+            &Atom::EndReachInit(path_id) => {
+                ms.push(NfaM::end_belongs_to(is_neg, path_id, &reach_sets.init))
+            }
+            &Atom::EndReachFinal(path_id) => {
+                ms.push(NfaM::end_belongs_to(is_neg, path_id, &reach_sets.fin))
+            }
+            &Atom::PathEq(path_id1, path_id2) => ms.push(NfaM::path_eq(is_neg, path_id1, path_id2)),
+            &Atom::InputEq(path_id1, path_id2) => {
+                ms.push(NfaM::input_eq(is_neg, path_id1, path_id2))
+            }
+            Atom::OutputEq(path_term1, path_term2) => {
+                if !is_neg {
+                    return Err("no output equality allowed".to_owned());
                 }
-                (Var::State(var1), Var::State(var2)) => {
-                    let m: NfaM;
 
-                    if let Some(path1) = declarations.path_id_by_start_state(var1) {
-                        if let Some(path2) = declarations.path_id_by_start_state(var2) {
-                            m = NfaM::start_start_eq(is_neg, path1, path2);
-
-                            ms.push(m);
-                        } else if let Some(path2) = declarations.path_id_by_end_state(var2) {
-                            m = NfaM::start_end_eq(is_neg, path1, path2);
-
-                            ms.push(m);
-                        } else {
-                            panic!("unknown state variable")
-                        }
-                    } else if let Some(path1) = declarations.path_id_by_end_state(var1) {
-                        if let Some(path2) = declarations.path_id_by_start_state(var2) {
-                            m = NfaM::end_start_eq(is_neg, path1, path2);
-
-                            ms.push(m);
-                        } else if let Some(path2) = declarations.path_id_by_end_state(var2) {
-                            m = NfaM::end_end_eq(is_neg, path1, path2);
-
-                            ms.push(m);
-                        } else {
-                            panic!("unknown state variable")
-                        }
-                    } else {
-                        panic!("unknown state variable")
+                match target_nfa.output_type {
+                    OutputType::None => {
+                        return Err("no output disequality for trivial monoid allowed".to_owned());
+                    }
+                    OutputType::Number => {
+                        pas.push(NpaM::count_neq(path_term1.clone(), path_term2.clone()))
+                    }
+                    OutputType::Word => {
+                        return Err("no output disequality for free monoid allowed".to_owned());
                     }
                 }
-                (Var::Input(var1), Var::Input(var2)) => {
-                    let pi1 = declarations.path_id_by_input_var(var1);
-                    let pi2 = declarations.path_id_by_input_var(var2);
+            }
+            &Atom::StartStartEq(path_id1, path_id2) => {
+                ms.push(NfaM::start_start_eq(is_neg, path_id1, path_id2))
+            }
+            &Atom::StartEndEq(path_id1, path_id2) => {
+                ms.push(NfaM::start_end_eq(is_neg, path_id1, path_id2))
+            }
+            &Atom::EndStartEq(path_id1, path_id2) => {
+                ms.push(NfaM::end_start_eq(is_neg, path_id1, path_id2))
+            }
+            &Atom::EndEndEq(path_id1, path_id2) => {
+                ms.push(NfaM::end_end_eq(is_neg, path_id1, path_id2))
+            }
+            &Atom::InputPrefix(path_id1, path_id2) => {
+                ms.push(NfaM::prefix(is_neg, path_id1, path_id2))
+            }
+            &Atom::InputBelongs(path_id, ref lang) => {
+                let dfa = language_automata
+                    .get(lang.as_str())
+                    .ok_or_else(|| format!("undeclared language: {lang}"))
+                    .cloned()?;
 
-                    let m = NfaM::input_eq(is_neg, pi1, pi2);
-                    ms.push(m);
-                }
-                (Var::Output(var1), Var::Output(var2)) => {
-                    let pi1 = declarations.path_id_by_output_var(var1);
-                    let pi2 = declarations.path_id_by_output_var(var2);
+                let dfa = if is_neg { dfa.complement() } else { dfa };
 
-                    if !is_neg {
-                        unimplemented!("no output equality")
-                    }
+                ms.push(NfaM::input_lang_belong(path_id, dfa))
+            }
+            Atom::OutputBelongs(path_term, lang) => {
+                let dfa = language_automata
+                    .get(lang.as_str())
+                    .ok_or_else(|| format!("undeclared language: {lang}"))
+                    .cloned()?;
+                let dfa = if is_neg { dfa.complement() } else { dfa };
 
-                    match target_nfa.output_type {
-                        OutputType::None => unimplemented!("no output equality for trivial monoid"),
-                        OutputType::Number => pas.push(NpaM::count_neq(pi1, pi2)),
-                    }
-                }
-                _ => panic!("wrong variable type for eq"),
-            },
+                let m = path_term.len();
+                let states = dfa.states();
+                let cartesian_states = util::cartesian_power(&states, m - 1);
+                let cartesian_states = cartesian_states
+                    .into_iter()
+                    .map(|s| s.into_iter().copied().collect())
+                    .collect();
+
+                m_tuples.push(MTupleUnion::new(
+                    path_term.clone(),
+                    dfa.clone(),
+                    cartesian_states,
+                ))
+            }
+            &Atom::InputLenLessOrEq(path_id1, path_id2) => {
+                ms.push(NfaM::length(is_neg, path_id1, path_id2))
+            }
         }
     }
 
-    (MAutomata { ms }, ParikhAutomata { pas })
+    Ok((
+        MAutomata { ms },
+        ParikhAutomata { pas },
+        MTupleUnionAutomata {
+            m_union_tuples: m_tuples,
+        },
+    ))
 }

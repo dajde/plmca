@@ -1,0 +1,2 @@
+exists pi1 : p1 -- u1 -> q1,
+! u1 $> L /\ init p1 /\ final q1

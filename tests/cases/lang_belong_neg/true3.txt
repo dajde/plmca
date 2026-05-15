@@ -1,0 +1,4 @@
+_start -> p1 : x
+p1 -> p2 : y
+p2 -> p3 : z
+p3 -> end* : z

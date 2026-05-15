@@ -72,58 +72,35 @@ pub enum Literal {
 /// Returns the set of all the possible conjunctions of literals from a formula,
 /// such that there exists a satisfiable conjunction in this set if and only if
 /// the original formula is satisfiable.
-pub fn split_ors(tree: NNFBooleanFormula) -> Vec<Vec<Literal>> {
+pub fn decompose_into_conjunctions(tree: NNFBooleanFormula) -> Vec<Vec<Literal>> {
     match tree {
         NNFBooleanFormula::Empty => Vec::new(),
         NNFBooleanFormula::BinOp(op, left, right) => match op {
             BinOp::Or => {
-                let mut vec1 = split_ors(*left);
-                let mut vec2 = split_ors(*right);
+                let mut vec1 = decompose_into_conjunctions(*left);
+                let mut vec2 = decompose_into_conjunctions(*right);
 
                 vec1.append(&mut vec2);
 
                 vec1
             }
             BinOp::And => {
-                let mut vec1 = split_ors(*left);
-                let vec2 = split_ors(*right);
+                let vec1 = decompose_into_conjunctions(*left);
+                let vec2 = decompose_into_conjunctions(*right);
 
-                for subvec1 in &mut vec1 {
+                let mut result = Vec::new();
+                for subvec1 in &vec1 {
                     for subvec2 in &vec2 {
-                        subvec1.extend(subvec2.iter().cloned())
+                        let union = subvec1.iter().chain(subvec2).cloned().collect();
+
+                        result.push(union);
                     }
                 }
 
-                vec1
+                result
             }
         },
-        NNFBooleanFormula::Neg(x) => match x {
-            Atom::Eq(var1, var2) => vec![vec![Literal::NotPredicate(Atom::Eq(var1, var2))]],
-            Atom::Prefix(var1, var2) => {
-                vec![vec![Literal::NotPredicate(Atom::Prefix(var1, var2))]]
-            }
-            Atom::Belongs(var, lang) => {
-                vec![vec![Literal::NotPredicate(Atom::Belongs(var, lang))]]
-            }
-            Atom::LessOrEq(var1, var2) => {
-                vec![vec![Literal::NotPredicate(Atom::LessOrEq(var1, var2))]]
-            }
-            Atom::Init(var) => vec![vec![Literal::NotPredicate(Atom::Init(var))]],
-            Atom::Final(var) => vec![vec![Literal::NotPredicate(Atom::Final(var))]],
-            Atom::ReachInit(var) => vec![vec![Literal::NotPredicate(Atom::ReachInit(var))]],
-            Atom::ReachFinal(var) => vec![vec![Literal::NotPredicate(Atom::ReachFinal(var))]],
-        },
-        NNFBooleanFormula::Atom(x) => match x {
-            Atom::Eq(var1, var2) => vec![vec![Literal::Predicate(Atom::Eq(var1, var2))]],
-            Atom::Prefix(var1, var2) => vec![vec![Literal::Predicate(Atom::Prefix(var1, var2))]],
-            Atom::Belongs(var, lang) => vec![vec![Literal::Predicate(Atom::Belongs(var, lang))]],
-            Atom::LessOrEq(var1, var2) => {
-                vec![vec![Literal::Predicate(Atom::LessOrEq(var1, var2))]]
-            }
-            Atom::Init(var) => vec![vec![Literal::Predicate(Atom::Init(var))]],
-            Atom::Final(var) => vec![vec![Literal::Predicate(Atom::Final(var))]],
-            Atom::ReachInit(var) => vec![vec![Literal::Predicate(Atom::ReachInit(var))]],
-            Atom::ReachFinal(var) => vec![vec![Literal::Predicate(Atom::ReachFinal(var))]],
-        },
+        NNFBooleanFormula::Atom(x) => vec![vec![Literal::Predicate(x)]],
+        NNFBooleanFormula::Neg(x) => vec![vec![Literal::NotPredicate(x)]],
     }
 }

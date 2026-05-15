@@ -17,19 +17,19 @@ pub struct RawTransTo {
     pub state: String,
 }
 
+pub struct RawAutomaton {
+    pub init: BTreeSet<String>,
+    pub fin: BTreeSet<String>,
+    pub trans: HashMap<RawTransOn, HashSet<RawTransTo>>,
+}
+
 /// Parse the input string consisting of transitions each on a separate line into a FA.
-pub fn parse_automaton(
-    input: &str,
-) -> (
-    BTreeSet<String>,
-    BTreeSet<String>,
-    HashMap<RawTransOn, HashSet<RawTransTo>>,
-) {
+pub fn parse_automaton(input: &str) -> Result<RawAutomaton, String> {
     let lines = input.lines();
 
-    let mut transitions: HashMap<RawTransOn, HashSet<RawTransTo>> = HashMap::new();
     let mut init: BTreeSet<String> = BTreeSet::new();
     let mut fin: BTreeSet<String> = BTreeSet::new();
+    let mut trans: HashMap<RawTransOn, HashSet<RawTransTo>> = HashMap::new();
 
     for (index, line) in lines.enumerate() {
         if line.is_empty() {
@@ -38,7 +38,7 @@ pub fn parse_automaton(
 
         let transition = match parse_line(line) {
             Ok(x) => x,
-            Err(x) => panic!("error: {x} on line: {index}"),
+            Err(x) => return Err(format!("{x} on line: {}", index + 1)),
         };
 
         check_state_nfa(&transition.0.state, &mut init, &mut fin);
@@ -53,10 +53,10 @@ pub fn parse_automaton(
             state: transition.1.state,
         };
 
-        transitions.entry(on).or_default().insert(to);
+        trans.entry(on).or_default().insert(to);
     }
 
-    (init, fin, transitions)
+    Ok(RawAutomaton { init, fin, trans })
 }
 
 fn check_state_nfa(state: &str, init: &mut BTreeSet<String>, fin: &mut BTreeSet<String>) {
@@ -70,8 +70,7 @@ fn check_state_nfa(state: &str, init: &mut BTreeSet<String>, fin: &mut BTreeSet<
 }
 
 fn parse_line(line: &str) -> Result<(RawTransOn, RawTransTo), String> {
-    let it = line.chars().filter(|c| !c.is_whitespace()).peekable();
-    let mut tokens = util::parse::tokens(it)?.into_iter().peekable();
+    let mut tokens = util::parse::tokens(line)?.into_iter().peekable();
 
     let line_no_output: Vec<(RawToken, &str)> = vec![
         (RawToken::Name(String::new()), "from state identifier"),
