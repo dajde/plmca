@@ -4,7 +4,7 @@ mod bounded_search_witness;
 mod search_witness;
 
 use crate::atoms::{MAutomata, MTupleUnionAutomata, ParikhAutomata};
-use crate::automaton::{LangDfa, Letter, State, TargetNfa};
+use crate::automaton::{LangDfa, Letter, OutputLetter, State, TargetNfa};
 use crate::formula::simplify::NNFBooleanFormula;
 use crate::formula::{self, Declarations, ForallStates, PathId, Vars};
 use crate::paths_n::{self, NfaPathsN, PathSymbol, PathTuple, StartStateProp};
@@ -33,6 +33,20 @@ fn decode_path_tuples(
                 }
                 PathSymbol::Letter(Letter(x)) => {
                     let decoded = letter_to_id.object(*x).unwrap().to_owned();
+                    v.push(decoded);
+                }
+                PathSymbol::OutWord(word) => {
+                    let outputs: Vec<String> = word
+                        .iter()
+                        .map(|&OutputLetter(x)| letter_to_id.object(x).unwrap().to_owned())
+                        .collect();
+
+                    let decoded = if outputs.is_empty() {
+                        "--".to_owned()
+                    } else {
+                        outputs.join("|")
+                    };
+
                     v.push(decoded);
                 }
                 PathSymbol::Bottom => {
