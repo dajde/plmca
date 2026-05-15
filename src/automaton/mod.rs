@@ -215,6 +215,8 @@ impl TargetNfa {
                         output: to
                             .output
                             .split("|")
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
                             .map(|l| OutputLetter(letter_to_id.insert(l.to_owned())))
                             .collect(),
                     };
